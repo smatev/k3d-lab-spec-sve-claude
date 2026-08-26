@@ -1,0 +1,58 @@
+# Declarative cluster definition — the whole `k3d cluster create` invocation lives here
+# so it is reviewable, diffable, and identical on every machine.
+#
+# apiVersion moves between k3d releases; this one matches k3d 5.9.0.
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+
+metadata:
+  name: lab
+
+# Multi-node on purpose: topologySpreadConstraints and PDBs are meaningless on one node.
+servers: 1
+agents: 2
+
+# Pin the Kubernetes version. Floating here is how a lab stops being reproducible.
+image: rancher/k3s:v1.36.3-k3s1
+
+ports:
+  # The k3d loadbalancer container publishes these on 127.0.0.1, so everything is
+  # reachable on plain localhost with no DNS involved.
+  - port: 80:80
+    nodeFilters:
+      - loadbalancer
+  - port: 443:443
+    nodeFilters:
+      - loadbalancer
+
+registries:
+  create:
+    # k3d uses this name verbatim — it does NOT prepend `k3d-`. The name becomes the
+    # container name, the Docker-network DNS name, and the mirror key written into each
+    # node's /etc/rancher/k3s/registries.yaml, so it must be spelled the way image refs
+    # will spell it.
+    #
+    # The registry therefore has two names, which is the whole lesson:
+    #   from the host      -> localhost:5000
+    #   inside the cluster -> k3d-registry:5000
+    # Image references in Helm values must use the in-cluster name.
+    name: k3d-registry
+    host: "0.0.0.0"
+    hostPort: "5000"
+
+options:
+  k3s:
+    extraArgs:
+      # k3s ships Traefik and configures it via a HelmChartConfig CR. That mechanism is
+      # worth knowing, but it pins us to whatever Traefik the k3s tag carries and splits
+      # config across two idioms. We install our own, pinned, in bootstrap.sh.
+      - arg: --disable=traefik
+        nodeFilters:
+          - server:*
+  k3d:
+    # Fail loudly rather than half-succeeding.
+    wait: true
+    timeout: "300s"
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: false

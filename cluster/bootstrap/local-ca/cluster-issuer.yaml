@@ -1,0 +1,12 @@
+# Step 3: a ClusterIssuer backed by the root CA above.
+#
+# Cluster-scoped so Certificates in any namespace can reference it — the Gateway's cert
+# lives in `gateway`, and Part 2's app chart may want one of its own elsewhere.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: k3d-lab-ca-issuer
+spec:
+  ca:
+    # cert-manager looks for this secret in its own namespace (cert-manager).
+    secretName: k3d-lab-ca

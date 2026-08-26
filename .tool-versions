@@ -1,0 +1,14 @@
+# Pinned so two laptops build the same cluster.
+# Bump deliberately, never incidentally — see CLAUDE.md.
+k3d 5.9.0
+kubectl 1.36.4
+
+# Helm 3, NOT 4. Helm 4 changed the plugin API and neither chart-testing nor
+# helm-unittest supports it yet; Part 2 depends on both.
+helm 3.21.4
+
+# Part 2 tooling, pinned now so the versions are decided before they're needed.
+kubeconform 0.8.0
+kube-score 1.20.0
+# chart-testing has no short registry alias; name the aqua package explicitly.
+aqua:helm/chart-testing 3.14.0

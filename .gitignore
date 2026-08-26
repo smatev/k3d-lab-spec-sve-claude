@@ -1,0 +1,3 @@
+# Generated at runtime: local CA cert, kubeconfig exports, scratch manifests.
+# Nothing in here is a source of truth — `make up` recreates all of it.
+.local/

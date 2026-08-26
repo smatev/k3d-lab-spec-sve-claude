@@ -1,0 +1,86 @@
+# Traefik chart 41.3.0 (Traefik v3.7.11)
+#
+# Installed by us rather than by k3s, so the version is explicit and all configuration
+# lives in this one file.
+
+providers:
+  kubernetesGateway:
+    # The primary routing surface. Requires the Gateway API CRDs to already exist —
+    # hence the ordering in bootstrap.sh.
+    enabled: true
+    # Standard channel only. Experimental features (TLSRoute, TCPRoute) live in a
+    # separate CRD channel we deliberately do not install.
+    experimentalChannel: false
+
+  kubernetesIngress:
+    # Kept on so the app chart's Ingress compatibility toggle is actually testable.
+    # The Ingress API is feature-frozen; this is a migration affordance, not the default.
+    enabled: true
+    publishedService:
+      enabled: true
+
+  kubernetesCRD:
+    # Traefik's own IngressRoute CRDs. Needed for the dashboard route to be *possible*,
+    # even though we leave it disabled below.
+    enabled: true
+
+# The chart will happily create a Gateway and GatewayClass for you. We turn both off:
+# they live in cluster/bootstrap/gateway/ so the repo owns them and they are reviewable
+# as ordinary manifests.
+gateway:
+  enabled: false
+gatewayClass:
+  enabled: false
+
+ports:
+  web:
+    # NOTE: this is the *container* port. The Service maps 80 -> 8000. A Gateway
+    # listener binds to the entrypoint with the matching port number, so listeners in
+    # gateway.yaml use 8000/8443, not 80/443.
+    port: 8000
+    exposedPort: 80
+    expose:
+      default: true
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+
+  websecure:
+    port: 8443
+    exposedPort: 443
+    expose:
+      default: true
+    http:
+      # TLS config lives under `http`, not directly on the entrypoint. The chart's
+      # values.schema.json rejects the flatter spelling outright, which is exactly the
+      # kind of typo a schema is meant to catch.
+      tls:
+        enabled: true
+
+  traefik:
+    # The dashboard/API port stays unexposed. Reach it with:
+    #   kubectl --context k3d-lab -n traefik port-forward deploy/traefik 8080:8080
+    expose:
+      default: false
+
+api:
+  dashboard: true
+
+ingressRoute:
+  dashboard:
+    # Enabled dashboard, unexposed route. Port-forward is the only way in.
+    enabled: false
+
+service:
+  type: LoadBalancer
+
+log:
+  level: INFO
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 64Mi

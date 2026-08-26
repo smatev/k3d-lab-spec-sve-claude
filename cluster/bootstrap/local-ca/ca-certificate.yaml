@@ -1,0 +1,30 @@
+# Step 1 of the local PKI: a self-signed issuer that exists only to sign the root CA.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-bootstrap
+  namespace: cert-manager
+spec:
+  selfSigned: {}
+---
+# Step 2: the root CA itself. `isCA: true` is what makes the resulting key usable for
+# signing other certificates. The secret it produces is what `make ca` extracts to
+# .local/ca.crt so curl can verify properly.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: k3d-lab-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: k3d-lab local CA
+  secretName: k3d-lab-ca
+  duration: 8760h    # 1 year
+  renewBefore: 720h  # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-bootstrap
+    kind: Issuer
+    group: cert-manager.io

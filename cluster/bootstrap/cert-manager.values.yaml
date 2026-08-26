@@ -1,0 +1,28 @@
+# cert-manager v1.21.1
+#
+# Real TLS locally: a self-signed root CA lives in the cluster and issues per-host
+# certificates. No public DNS, no ACME, no Let's Encrypt, and no `curl -k`.
+
+crds:
+  # `crds.enabled` is the current key; `installCRDs` is the deprecated alias.
+  enabled: true
+  keep: true
+
+# A lab, not production — keep the footprint small enough that three nodes on a laptop
+# do not feel it, but keep requests set so the scheduler has something to work with.
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+
+webhook:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+
+cainjector:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi

@@ -1,0 +1,27 @@
+# TLS for the shared Gateway, issued by the in-cluster CA.
+#
+# Referenced explicitly by gateway.yaml rather than relying on cert-manager's Gateway
+# annotation shim: the explicit resource is clearer and does not depend on a feature gate.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gateway-tls
+  namespace: gateway
+spec:
+  secretName: k3d-lab-gateway-tls
+  duration: 2160h    # 90 days
+  renewBefore: 360h  # 15 days
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  dnsNames:
+    - k3d.local
+    # Covers demo-api.k3d.local and friends without reissuing per app.
+    - "*.k3d.local"
+    # A wildcard does NOT cover a bare single-label name, so localhost is listed
+    # separately. Part 2's browser-reachable path-based route needs it.
+    - localhost
+  issuerRef:
+    name: k3d-lab-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

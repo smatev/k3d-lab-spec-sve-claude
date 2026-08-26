@@ -1,0 +1,11 @@
+# The GatewayClass is the cluster-scoped "which controller implements this" record.
+#
+# The Traefik chart can create this itself; we disabled that (gatewayClass.enabled:false
+# in traefik.values.yaml) so the resource is visible in the repo rather than hidden in a
+# chart's rendered output.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: traefik
+spec:
+  controllerName: traefik.io/gateway-controller

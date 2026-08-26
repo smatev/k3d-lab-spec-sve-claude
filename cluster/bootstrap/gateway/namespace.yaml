@@ -1,0 +1,6 @@
+# The shared Gateway gets its own namespace, separate from the controller that
+# implements it. Applied first — the Certificate and Gateway both live here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway

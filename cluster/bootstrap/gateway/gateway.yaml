@@ -1,0 +1,36 @@
+# The shared Gateway. Application charts attach HTTPRoutes to this from their own
+# namespaces rather than each shipping a Gateway of their own.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: shared-gateway
+  namespace: gateway
+spec:
+  gatewayClassName: traefik
+  listeners:
+    # IMPORTANT: these are Traefik's *entrypoint* ports, not the published ports.
+    # Traefik binds a listener to the entrypoint whose port number matches, and the
+    # chart's entrypoints are web=8000 / websecure=8443 (the Service maps 80->8000 and
+    # 443->8443). A listener on port 80 resolves to no entrypoint and silently does
+    # nothing.
+    - name: web
+      port: 8000
+      protocol: HTTP
+      allowedRoutes:
+        # Routes default to the Gateway's own namespace. Opening this up is what lets a
+        # chart in another namespace attach — and forgetting it is the usual reason a
+        # route "silently doesn't work". Check the route's status conditions first.
+        namespaces:
+          from: All
+
+    - name: websecure
+      port: 8443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: k3d-lab-gateway-tls
+      allowedRoutes:
+        namespaces:
+          from: All
