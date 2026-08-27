@@ -1,0 +1,175 @@
+# Everything that makes a rollout safe, and the probe wiring it depends on.
+#
+# The acceptance criterion "a rollout under load produces zero failed requests" is
+# proved for real in scripts/smoke.sh against a live cluster. These tests protect the
+# preconditions, which is the part that can silently regress in a template edit.
+suite: rollout safety and probes
+chart:
+  version: 0.1.0
+  appVersion: "0.1.0"
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+  - templates/secret.yaml
+  - templates/pdb.yaml
+
+tests:
+  - it: never removes a ready pod before its replacement is ready
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 0
+      - equal:
+          path: spec.strategy.rollingUpdate.maxSurge
+          value: 1
+
+  - it: leaves the grace period longer than the drain it has to cover
+    template: templates/deployment.yaml
+    # The budget is preStop sleep (10s) + the app's own graceful-shutdown timeout
+    # (20s, set in app/main.py). Anything shorter and the kubelet SIGKILLs a pod that
+    # is still draining, which is exactly the connection-dropping this chart exists
+    # to avoid.
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 45
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value:
+            - sleep
+            - "10"
+
+  - it: drops the preStop hook when it is switched off
+    template: templates/deployment.yaml
+    set:
+      lifecycle.preStop.enabled: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].lifecycle
+
+  - it: stamps a config checksum on the pod template
+    template: templates/deployment.yaml
+    # Without this annotation, changing a ConfigMap value leaves the pod template
+    # byte-identical, no new ReplicaSet is created, and the running pods keep their
+    # old environment. "Applied the config and nothing happened" is the classic bug.
+    asserts:
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/config"]
+          pattern: "^[a-f0-9]{64}$"
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/secret"]
+          pattern: "^[a-f0-9]{64}$"
+
+  - it: has no secret checksum when the Secret is managed elsewhere
+    template: templates/deployment.yaml
+    set:
+      secret.create: false
+      secret.existingSecret: externally-managed
+    asserts:
+      - notExists:
+          path: spec.template.metadata.annotations["checksum/secret"]
+      - exists:
+          path: spec.template.metadata.annotations["checksum/config"]
+
+  - it: hands the replica count to the HPA when autoscaling is on
+    template: templates/deployment.yaml
+    # Templating replicas alongside an HPA makes every `helm upgrade` reset the count,
+    # the autoscaler put it back, and the deployment appear to flap for no reason.
+    set:
+      autoscaling.enabled: true
+    asserts:
+      - notExists:
+          path: spec.replicas
+
+  - it: owns the replica count when autoscaling is off
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 2
+
+  - it: asks three different questions with three probes
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.httpGet.path
+          value: /healthz
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /healthz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+
+  - it: never points liveness at the readiness endpoint
+    template: templates/deployment.yaml
+    # The only response to a liveness failure is a restart. Aimed at /readyz, a slow
+    # dependency becomes a cluster-wide restart loop — strictly worse than the
+    # original problem. values.schema.json rejects this too; belt and braces.
+    asserts:
+      - notEqual:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /readyz
+
+  - it: resolves probe ports by name, so the container port can move
+    template: templates/deployment.yaml
+    set:
+      containerPort: 9090
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.port
+          value: http
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].containerPort
+          value: 9090
+
+  - it: drops each probe independently
+    template: templates/deployment.yaml
+    set:
+      probes.startup.enabled: false
+      probes.liveness.enabled: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].startupProbe
+      - notExists:
+          path: spec.template.spec.containers[0].livenessProbe
+      - exists:
+          path: spec.template.spec.containers[0].readinessProbe
+
+  - it: budgets disruption without deadlocking a drain
+    template: templates/pdb.yaml
+    # maxUnavailable: 1, not minAvailable: <replicas>. A PDB stricter than the
+    # deployment's surge capacity means the eviction API refuses every request and
+    # `kubectl drain` blocks forever on a perfectly healthy cluster.
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+
+  - it: expresses the budget as a floor when asked to
+    template: templates/pdb.yaml
+    set:
+      podDisruptionBudget.minAvailable: 1
+      podDisruptionBudget.maxUnavailable: ""
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - notExists:
+          path: spec.maxUnavailable
+
+  - it: spreads replicas across nodes with a selector it can only learn at render time
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].topologyKey
+          value: kubernetes.io/hostname
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable
+          value: ScheduleAnyway
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME

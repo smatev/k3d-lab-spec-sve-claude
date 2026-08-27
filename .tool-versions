@@ -12,3 +12,10 @@ kubeconform 0.8.0
 kube-score 1.20.0
 # chart-testing has no short registry alias; name the aqua package explicitly.
 aqua:helm/chart-testing 3.14.0
+
+# `ct lint` shells out to these two for Chart.yaml schema validation and YAML linting.
+# They are Python packages, so they need a Python package installer; uv is here to be
+# that and nothing else. Without all three, ct exits before it lints anything.
+uv 0.9.29
+pipx:yamale 6.1.0
+pipx:yamllint 1.38.0

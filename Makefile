@@ -10,7 +10,15 @@ SHELL := /usr/bin/env bash
 CLUSTER  := lab
 CONTEXT  := k3d-$(CLUSTER)
 KUBECTL  := kubectl --context $(CONTEXT)
+HELM     := helm --kube-context $(CONTEXT)
 LOCAL    := .local
+
+# Part 2. Overridable so a second release can be installed side by side — which is how
+# the Gateway's cross-namespace routing gets exercised for real:
+#   make install RELEASE=demo-api-b NAMESPACE=demo-api-b
+CHART     := charts/demo-api
+RELEASE   ?= demo-api
+NAMESPACE ?= demo-api
 
 # Put mise's shims on PATH for every recipe, so the pinned versions are used whether or
 # not the operator has activated mise in their shell — and so bootstrap.sh and verify.sh
@@ -20,7 +28,8 @@ ifneq ($(wildcard $(MISE_SHIMS)),)
 export PATH := $(MISE_SHIMS):$(HOME)/.local/bin:$(PATH)
 endif
 
-.PHONY: help tools doctor up down bootstrap ca verify idempotent reset dashboard
+.PHONY: help tools doctor up down bootstrap ca verify idempotent reset dashboard \
+        schemas build lint unit install uninstall smoke ct-install rollout hpa ci
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -70,6 +79,49 @@ verify: ## Run the acceptance test
 
 idempotent: ## Prove a second bootstrap changes nothing
 	./scripts/check-idempotent.sh
+
+## --- the chart ------------------------------------------------------------
+
+schemas: ## Generate CRD JSON schemas for kubeconform (into .local/, gitignored)
+	./scripts/gen-schemas.sh
+
+build: ## Build the app image and push it to the k3d registry
+	./scripts/build.sh
+
+lint: schemas ## helm lint, ct lint, kubeconform --strict, kube-score
+	./scripts/lint.sh
+
+unit: ## Template logic tests (helm unittest) — no cluster needed
+	helm unittest $(CHART)
+
+install: ## helm upgrade --install --atomic
+	@# --atomic rolls back a failed upgrade instead of leaving the release wedged
+	@# half-applied, and it implies --wait: the command returns when the pods are
+	@# actually ready, not when the API server accepted the objects. --timeout bounds
+	@# how long "actually ready" is allowed to take, because --atomic without one waits
+	@# forever on an image that will never pull.
+	$(HELM) upgrade --install $(RELEASE) $(CHART) \
+		--namespace $(NAMESPACE) --create-namespace \
+		--atomic --timeout 5m
+
+uninstall: ## Remove the release and its namespace
+	-$(HELM) uninstall $(RELEASE) --namespace $(NAMESPACE) --wait
+	-$(KUBECTL) delete namespace $(NAMESPACE) --ignore-not-found
+
+smoke: ## helm test (in-cluster) + host-side check through the Gateway
+	RELEASE=$(RELEASE) NAMESPACE=$(NAMESPACE) ./scripts/smoke.sh
+
+ct-install: ## Install every ci/ value set into a throwaway namespace and helm test it
+	ct install --config ct.yaml
+
+rollout: ## Prove: config change rolls pods, a rollout under load drops nothing, rollback works
+	RELEASE=$(RELEASE) NAMESPACE=$(NAMESPACE) ./scripts/rollout-test.sh
+
+hpa: ## Prove: /api/v1/burn scales the HPA up, and it scales back down afterwards
+	RELEASE=$(RELEASE) NAMESPACE=$(NAMESPACE) ./scripts/hpa-test.sh
+
+ci: lint unit build install smoke ## The loop that matters
+	@printf '\n\033[1;32mci: green\033[0m\n'
 
 ## --- conveniences ---------------------------------------------------------
 

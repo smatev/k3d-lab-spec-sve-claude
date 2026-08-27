@@ -40,6 +40,21 @@ Local Kubernetes learning lab. Everything is code — no manual kubectl apply.
   chart-testing nor helm-unittest supports it. Do not "upgrade" it.
 - A wildcard certificate for `*.k3d.local` does not cover `localhost`, or a bare
   `k3d.local`. All three are listed explicitly in the Gateway's Certificate.
+- **`helm.sh/hook-delete-policy` on the test pod is `before-hook-creation` ONLY.**
+  Adding `hook-succeeded` breaks `helm test --logs`: Helm deletes the pod on success,
+  then fails to read its logs, so a *passing* test exits non-zero with
+  `pods "…-test-connection" not found`.
+- **`ct` needs `chart_schema.yaml` and `lintconf.yaml`, and `yamale` and `yamllint`.**
+  Upstream ships the first two inside its Docker image at `/etc/ct`; we run the binary,
+  so they are vendored in `etc/` and named in `ct.yaml`. Without any of the four, `ct
+  lint` exits before it lints anything. `ct` resolves those paths relative to the
+  working directory, so `scripts/lint.sh` runs it from the repo root.
+- **`.helmignore` patterns match at any depth unless anchored.** A bare `tests/`
+  silently excludes `templates/tests/` too, which is the `helm test` hook. The symptom
+  is `TEST SUITE: None` and nothing saying why. Ours are `/tests/` and `/ci/`.
+- `rollout status` returns when the new pods are Ready, which with `maxUnavailable: 0`
+  is *before* the old ones finish terminating. A check that reads the app right after it
+  can still hit a draining pod.
 
 ## Rules — DNS
 
@@ -56,7 +71,12 @@ Local Kubernetes learning lab. Everything is code — no manual kubectl apply.
 
 - The only kube context this repo touches is `k3d-lab`. Never any other context. Every
   `kubectl`/`helm` call passes `--context` / `--kube-context` explicitly.
-- Every change must keep `make verify` passing. Run it before saying you're done.
+- Every change must keep `make verify` passing. A chart change must also keep `make ci`
+  passing. Run them before saying you're done.
+- kube-score findings are silenced by name, never wholesale, and always with the reason
+  written next to them — in the manifest (`kube-score/ignore` on the test pod) or in the
+  one `ci/` value set the finding is expected in. `--ignore-test` in `scripts/lint.sh`
+  is repo-wide and is the last resort.
 - Chart and tool versions are pinned in `.tool-versions` and `bootstrap.sh`. Do not bump
   them without being asked.
 - `bootstrap.sh` must stay idempotent: running it twice changes nothing.
@@ -68,12 +88,27 @@ Local Kubernetes learning lab. Everything is code — no manual kubectl apply.
 ```
 cluster/k3d.yaml              declarative cluster definition
 cluster/bootstrap/            bootstrap.sh + pinned values and manifests
+app/                          the demo service + Dockerfile
+charts/demo-api/              the chart; ci/ = chart-testing value sets, tests/ = unit specs
+schemas/crds/                 CRDs the lab validates against but does not install
+etc/                          chart-testing's vendored schema and yamllint config
 scripts/curl.sh               the only way this repo makes an HTTP request
-scripts/verify.sh             the acceptance test
+scripts/verify.sh             the acceptance test for the cluster
+scripts/lint.sh               helm lint + ct lint + kubeconform + kube-score
+scripts/gen-schemas.sh        vendored CRDs -> JSON schemas in .local/ (via crd-to-jsonschema.py)
+scripts/build.sh              docker build + push, tagged from Chart.yaml appVersion
+scripts/smoke.sh              the acceptance test for an installed release
+scripts/rollout-test.sh       config-change rollout, zero-drop upgrade, rollback
+scripts/hpa-test.sh           burn load -> scale up -> scale back down
 ```
 
 ## Current state
 
-Part 1 (cluster as code) is built. Part 2 (the `demo-api` Helm chart) is not started —
-`app/` and `charts/` do not exist yet. `.tool-versions` already pins the Part 2 tooling
-(kubeconform, chart-testing, kube-score, helm-unittest).
+Parts 1 and 2 are built. `make ci` (lint, unit, build, install, smoke) is green, as are
+`make ct-install`, `make rollout`, `make hpa` and `make verify`.
+
+Part 3 is not started; the candidates are in `k3d-lab-spec.md`. Two things already point
+at it: `metrics.serviceMonitor` is off by default because `monitoring.coreos.com` is not
+installed (the CRD is vendored in `schemas/crds/` for validation only), and
+`ct.yaml` disables `check-version-increment` because the chart is developed in place
+rather than published — turn it back on the day it is pushed to the registry.

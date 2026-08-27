@@ -1,0 +1,9 @@
+# chart-testing installs the chart once per file in this directory, each into a fresh
+# namespace, and runs `helm test` against the result. These are not example values —
+# they are the configurations this chart claims to support, and every one of them has
+# to survive a real install.
+#
+# This file is deliberately close to empty: it proves the defaults install and pass
+# their own tests with no help at all. A chart whose defaults do not work is a chart
+# nobody can evaluate.
+replicaCount: 2

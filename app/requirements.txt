@@ -1,0 +1,4 @@
+# Pinned exactly. A lab that floats its dependencies isn't reproducible.
+fastapi==0.141.1
+uvicorn==0.52.4
+prometheus-client==0.26.0

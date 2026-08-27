@@ -1,0 +1,122 @@
+# The securityContext assertions are written as invariants that survive refactoring.
+#
+# "The deployment contains no runAsUser: 0" stays true and stays meaningful when the
+# pod spec is reorganised; "line 34 equals X" does not, and a suite full of the latter
+# gets deleted the first time someone reformats a template.
+suite: security context
+chart:
+  version: 0.1.0
+  appVersion: "0.1.0"
+templates:
+  # configmap.yaml and secret.yaml are listed because deployment.yaml `include`s both
+  # to build its checksum annotations. helm-unittest only loads the templates a suite
+  # names, and an include of an unloaded template is a hard error — which is why every
+  # test below selects the deployment explicitly with `template:`.
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+  - templates/secret.yaml
+
+tests:
+  - it: never runs as root, anywhere in the pod spec
+    template: templates/deployment.yaml
+    asserts:
+      - notMatchRegexRaw:
+          pattern: "runAsUser: 0$"
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsNonRoot
+          value: true
+
+  - it: runs as the UID baked into the image
+    template: templates/deployment.yaml
+    # If these two drift apart the container starts as a user that does not exist in
+    # /etc/passwd, which breaks in ways that look nothing like a permissions problem.
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 10001
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+          value: 10001
+
+  - it: hardens the container by default
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - contains:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          content: ALL
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+
+  - it: gives the read-only root filesystem somewhere to write
+    template: templates/deployment.yaml
+    # readOnlyRootFilesystem without a writable /tmp is how a chart passes a security
+    # scan and fails at runtime the first time anything opens a temp file.
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir: {}
+
+  - it: does not mount a ServiceAccount token the app cannot use
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: mounts the secret read-only and not world-readable
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: secret
+            mountPath: /etc/demo-api/secret
+            readOnly: true
+      - equal:
+          path: spec.template.spec.volumes[0].secret.defaultMode
+          value: 256    # 0400 octal — owner read, nobody else
+
+  - it: never pins the image to a floating tag
+    template: templates/deployment.yaml
+    asserts:
+      - notMatchRegexRaw:
+          pattern: "image: .*:latest"
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: k3d-registry:5000/demo-api:0.1.0
+
+  - it: lets an operator drop the CPU limit entirely
+    template: templates/deployment.yaml
+    # Defaults are opinions, not laws. values.yaml argues both sides of the CPU-limits
+    # question and picks one; this proves the other side is reachable.
+    #
+    # `null` rather than omitting the key: values are deep-merged, so leaving cpu out
+    # of an override keeps the chart default. Explicit null is how a key is removed.
+    set:
+      resources.requests.cpu: 250m
+      resources.limits.cpu: null
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.cpu
+          value: 250m
+      - notExists:
+          path: spec.template.spec.containers[0].resources.limits.cpu
+      - exists:
+          path: spec.template.spec.containers[0].resources.limits.memory

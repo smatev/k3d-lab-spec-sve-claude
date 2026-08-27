@@ -1,0 +1,70 @@
+# Everything on at once.
+#
+# Toggles that each work alone can still be mutually exclusive in practice, and this is
+# the set that catches that.
+#
+# metrics.serviceMonitor stays off: monitoring.coreos.com is a cluster-scoped
+# prerequisite the lab does not install, and an install against a cluster without the
+# CRD fails outright. That is the correct behaviour, not something to work around.
+
+replicaCount: 3
+
+route:
+  httpRoute:
+    enabled: true
+    hostnames:
+      - demo-api-everything.k3d.local
+    localhost:
+      enabled: true
+      pathPrefix: /demo-everything
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 85
+  behavior:
+    scaleDown:
+      # Default is 300s. Shortened here only so the scale-down half of the HPA demo
+      # finishes inside a coffee break.
+      stabilizationWindowSeconds: 60
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+networkPolicy:
+  enabled: true
+  controllerNamespace: traefik
+  allowDNS: true
+  dnsNamespace: kube-system
+
+serviceAccount:
+  create: true
+  automount: false
+  annotations:
+    lab.k3d.local/purpose: "identity only, no RoleBinding"
+
+config:
+  env: ci-everything
+  message: "every toggle on"
+  warmupSeconds: 2
+  extraEnv:
+    FEATURE_FLAG: true
+    RETRY_COUNT: 3
+
+podAnnotations:
+  lab.k3d.local/ci-set: everything
+podLabels:
+  lab.k3d.local/ci-set: everything
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+
+tolerations:
+  - key: lab.k3d.local/nonexistent
+    operator: Exists
+    effect: NoSchedule

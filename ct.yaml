@@ -1,0 +1,36 @@
+# chart-testing configuration.
+#
+# `ct lint` checks chart structure, metadata and version bumps; `ct install` installs
+# every ci/*-values.yaml into a throwaway namespace and runs `helm test` against it.
+# Between them they are the difference between "the YAML rendered" and "the chart
+# works".
+
+chart-dirs:
+  - charts
+
+# ct looks for these in ./, $HOME/.ct and /etc/ct, and finds them in none of those:
+# upstream ships them inside the chart-testing Docker image, and we install the plain
+# binary from .tool-versions. Without them ct exits before it lints anything. Vendored
+# in etc/ and named here — relative to the repo root, which is where scripts/lint.sh
+# runs ct from.
+chart-yaml-schema: etc/chart_schema.yaml
+lint-conf: etc/lintconf.yaml
+
+# The only cluster this repo is allowed to touch.
+helm-extra-args: --timeout 300s --kube-context k3d-lab
+
+# Lint every chart rather than only the ones that differ from a target branch. The
+# repo has exactly one chart, and diff-based selection would silently skip it when
+# the change lives in scripts/ or app/ — which is precisely when a chart regression
+# would slip through.
+all: true
+
+# The maintainer check verifies each name in Chart.yaml against the GitHub API. This
+# lab must work with no network beyond pulling images, so it is off.
+validate-maintainers: false
+
+# `ct lint` normally requires a chart version bump for any change. Useful in a shared
+# repo with a published index; noise in a lab where the chart is developed in place.
+# Turned off deliberately, not by accident — turn it back on the day this chart is
+# packaged and pushed to the registry.
+check-version-increment: false

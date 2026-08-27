@@ -1,0 +1,25 @@
+# Autoscaling on.
+#
+# The interesting assertion is not that the HPA object exists — the unit tests cover
+# that — but that the Deployment and the HPA do not fight over spec.replicas during a
+# real install and upgrade.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 60
+
+# Small enough that /api/v1/burn actually moves the utilisation number. The HPA target
+# is a percentage of the *request*, so the request is what decides how sensitive the
+# autoscaler is.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 192Mi
+
+config:
+  env: ci-hpa
+  message: "autoscaled"

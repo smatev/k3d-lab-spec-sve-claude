@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "demo-api.fullname" . }}
+  labels:
+    {{- include "demo-api.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      # Named, not numeric. The container can move to a different port with a single
+      # values change and nothing here — or in the HTTPRoute, or the ServiceMonitor —
+      # needs to follow.
+      targetPort: http
+      protocol: TCP
+  selector:
+    # Selector labels only. Putting the full label set here would tie Service
+    # membership to the chart version, and every upgrade would briefly select nothing.
+    {{- include "demo-api.selectorLabels" . | nindent 4 }}

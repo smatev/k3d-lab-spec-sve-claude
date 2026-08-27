@@ -1,0 +1,55 @@
+# yamllint configuration for `ct lint`, which runs it over Chart.yaml and values.yaml.
+#
+# Vendored for the same reason as chart_schema.yaml: upstream keeps it in the ct
+# Docker image at /etc/ct, and we run the binary.
+#
+# Two deviations from upstream, both deliberate:
+#
+#   line-length   left disabled. values.yaml in this chart is deliberately heavy on
+#                 explanatory comments, and reflowing prose to satisfy a linter makes
+#                 it harder to read, not easier.
+#   truthy        a warning rather than an error, so `on:`-style keys are flagged
+#                 without failing a lint over a YAML 1.1 wart.
+
+---
+rules:
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: 0
+    min-spaces-inside-empty: -1
+    max-spaces-inside-empty: -1
+  brackets:
+    min-spaces-inside: 0
+    max-spaces-inside: 0
+    min-spaces-inside-empty: -1
+    max-spaces-inside-empty: -1
+  colons:
+    max-spaces-before: 0
+    max-spaces-after: 1
+  commas:
+    max-spaces-before: 0
+    min-spaces-after: 1
+    max-spaces-after: 1
+  comments:
+    require-starting-space: true
+    min-spaces-from-content: 2
+  document-end: disable
+  document-start: disable
+  empty-lines:
+    max: 2
+    max-start: 0
+    max-end: 0
+  hyphens:
+    max-spaces-after: 1
+  indentation:
+    spaces: consistent
+    indent-sequences: whatever
+    check-multi-line-strings: false
+  key-duplicates: enable
+  line-length: disable
+  new-line-at-end-of-file: enable
+  new-lines:
+    type: unix
+  trailing-spaces: enable
+  truthy:
+    level: warning

@@ -1,0 +1,138 @@
+# Routing is the part of this chart with real branching, so it gets the most tests.
+#
+# Every assertion here is about *behaviour* — does the route exist, does it point at
+# the right backend, does the filter that makes the path prefix work survive. None of
+# them pin a line number or a whole rendered document, because those break on every
+# comment edit and teach you to stop trusting the suite.
+suite: routing
+chart:
+  version: 0.1.0
+  appVersion: "0.1.0"
+templates:
+  - templates/httproute.yaml
+  - templates/ingress.yaml
+
+tests:
+  - it: renders the HTTPRoute and the localhost route by default
+    template: templates/httproute.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+
+  - it: uses the GA Gateway API version, not a leftover alpha or beta
+    # Gateway API moved fast and there is a great deal of v1alpha2/v1beta1 HTTPRoute
+    # material still in circulation. This is the guard against that drifting back in.
+    template: templates/httproute.yaml
+    documentIndex: 0
+    asserts:
+      - isAPIVersion:
+          of: gateway.networking.k8s.io/v1
+      - isKind:
+          of: HTTPRoute
+
+  - it: attaches to the shared Gateway in the gateway namespace
+    template: templates/httproute.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.parentRefs
+          content:
+            name: shared-gateway
+            namespace: gateway
+
+  - it: points the backendRef at this release's Service and port
+    template: templates/httproute.yaml
+    documentIndex: 0
+    set:
+      service.port: 8080
+    asserts:
+      - contains:
+          path: spec.rules[0].backendRefs
+          content:
+            name: RELEASE-NAME-demo-api
+            port: 8080
+
+  - it: strips the path prefix on the localhost route
+    # Without the URLRewrite filter the app receives /demo/api/v1/info and 404s. This
+    # is the single assertion that keeps the browser-reachable path working.
+    template: templates/httproute.yaml
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: spec.hostnames[0]
+          value: localhost
+      - equal:
+          path: spec.rules[0].matches[0].path.value
+          value: /demo
+      - contains:
+          path: spec.rules[0].filters
+          content:
+            type: URLRewrite
+            urlRewrite:
+              path:
+                type: ReplacePrefixMatch
+                replacePrefixMatch: /
+
+  - it: omits the localhost route when it is switched off
+    template: templates/httproute.yaml
+    set:
+      route.httpRoute.localhost.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: renders no HTTPRoute at all when httpRoute is disabled
+    template: templates/httproute.yaml
+    set:
+      route.httpRoute.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders no Ingress by default
+    template: templates/ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders an Ingress when the compatibility toggle is on
+    template: templates/ingress.yaml
+    set:
+      route.httpRoute.enabled: false
+      route.ingress.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: Ingress
+      - isAPIVersion:
+          of: networking.k8s.io/v1
+      - equal:
+          path: spec.ingressClassName
+          value: traefik
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: RELEASE-NAME-demo-api
+      - equal:
+          path: spec.rules[0].http.paths[0].pathType
+          value: Prefix
+
+  - it: refuses to render when both routing APIs are enabled
+    # Caught twice over: values.schema.json rejects the combination before templating
+    # (which is what fires here), and _helpers.tpl fails with a longer explanation if
+    # the value ever arrives by a route the schema did not see.
+    template: templates/httproute.yaml
+    set:
+      route.ingress.enabled: true
+    asserts:
+      - failedTemplate: {}
+
+  - it: allows a deployment with no external route at all
+    # Not an error: a Service reachable only from inside the cluster is a legitimate
+    # configuration, and the chart should not invent a requirement.
+    set:
+      route.httpRoute.enabled: false
+      route.ingress.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

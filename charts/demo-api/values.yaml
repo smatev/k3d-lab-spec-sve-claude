@@ -1,0 +1,293 @@
+# demo-api — default values.
+#
+# Two rules run through this file:
+#
+#   1. Everything optional is gated on <thing>.enabled.
+#   2. The default is the *safe* state, not the convenient one. Where "safe" and
+#      "works out of the box" genuinely conflict, the comment says so and explains
+#      which one won.
+#
+# values.schema.json mirrors this file. A key added here without a matching entry
+# there will be rejected at install time — that is deliberate, and it is the cheapest
+# typo detector in Helm.
+
+replicaCount: 2
+
+image:
+  # The *in-cluster* name of the k3d registry. The same registry answers to
+  # localhost:5000 from the host, and mixing the two up is the single most common k3d
+  # mistake: the host name resolves nowhere inside the cluster, so pods sit in
+  # ImagePullBackOff while `docker push` succeeds from the terminal.
+  repository: k3d-registry:5000/demo-api
+  # Empty means "use .Chart.AppVersion". Never `latest`: it makes the running image
+  # unidentifiable and turns every pod restart into a coin flip.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  # The app never talks to the Kubernetes API, so mounting a token it cannot use is
+  # free credential exposure. Off by default; flip it on the day the app needs it.
+  automount: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+deployment:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable: 0 means the rollout never dips below the current replica
+      # count — it adds a new pod, waits for it to pass readiness, then removes an
+      # old one. Combined with the PDB below, this is what makes a rollout under load
+      # produce zero failed requests.
+      maxUnavailable: 0
+      maxSurge: 1
+  revisionHistoryLimit: 3
+  # Must exceed lifecycle.preStop.sleepSeconds plus the app's own graceful-shutdown
+  # timeout (20s, set in main.py). If this is shorter, the kubelet SIGKILLs a pod that
+  # is still draining and the careful shutdown logic buys nothing.
+  terminationGracePeriodSeconds: 45
+
+lifecycle:
+  preStop:
+    # Endpoint removal and preStop run *in parallel*, so there is always a window
+    # where a terminating pod still receives traffic. The sleep holds the pod open
+    # long enough for every proxy to notice it has gone away. The app also stops
+    # reporting ready the instant it sees SIGTERM; the two together close the window
+    # from both ends.
+    enabled: true
+    sleepSeconds: 10
+
+config:
+  env: lab
+  message: "hello from the ConfigMap"
+  warmupSeconds: 5
+  # Extra key/value pairs injected as environment variables alongside the above.
+  # Values are stringified — a ConfigMap holds strings and nothing else.
+  extraEnv: {}
+
+secret:
+  # Local-dev convenience: template a Secret from these values.
+  #
+  # Never put a real secret in values.yaml — values are rendered into the release
+  # object, logged by CI, and committed in ci/ files. The shape here is the important
+  # part: set create=false and existingSecret=<name> and the chart mounts a Secret
+  # managed by something else (External Secrets, SOPS, a sealed secret) without any
+  # template change. Getting that shape right now is much cheaper than retrofitting.
+  create: true
+  existingSecret: ""
+  key: token
+  value: "dev-only-not-a-real-secret"
+  mountPath: /etc/demo-api/secret
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+# The port the container listens on. The Service maps service.port -> this.
+containerPort: 8000
+
+route:
+  # Exactly one of httpRoute and ingress may be enabled. The constraint is encoded
+  # twice on purpose: in values.schema.json, so it fails before templating, and as a
+  # `fail` in templates/_helpers.tpl, so it still fails clearly if the schema is
+  # bypassed.
+  httpRoute:
+    # Gateway API is the primary routing surface. The Ingress API is feature-frozen
+    # and the ingress-nginx controller was archived in March 2026; new work belongs
+    # here.
+    enabled: true
+    annotations: {}
+    parentRefs:
+      # The shared Gateway lives in its own namespace and permits routes from all
+      # namespaces. A cross-namespace attachment that silently does nothing is
+      # almost always allowedRoutes — check the HTTPRoute's status conditions first,
+      # Gateway API reports this properly, which Ingress never did.
+      - name: shared-gateway
+        namespace: gateway
+    hostnames:
+      - demo-api.k3d.local
+    localhost:
+      # A browser cannot do `curl --resolve`, and this lab has no DNS by design. A
+      # second rule matching PathPrefix on plain `localhost` — with a URLRewrite
+      # filter stripping the prefix before it reaches the app — makes the service
+      # browser-reachable using nothing outside the repo.
+      enabled: true
+      hostname: localhost
+      pathPrefix: /demo
+  ingress:
+    # Compatibility toggle only. Kept because supporting two routing APIs through a
+    # migration window is exactly what real charts are doing right now.
+    enabled: false
+    className: traefik
+    annotations: {}
+    hosts:
+      - host: demo-api.k3d.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+resources:
+  requests:
+    # Requests are what the scheduler packs against, so they should describe steady
+    # state, not peak.
+    cpu: 50m
+    memory: 64Mi
+    # The /tmp emptyDir and the container's own logs both count against ephemeral
+    # storage. Unbounded, a pod that logs in a loop fills the node's disk and evicts
+    # everything else on it — a noisy-neighbour failure with no obvious culprit.
+    ephemeral-storage: 64Mi
+  limits:
+    # Memory limits: set them. Memory is incompressible — a pod over its limit is
+    # OOMKilled, and the alternative is one leaking pod taking down a node.
+    memory: 192Mi
+    ephemeral-storage: 256Mi
+    # CPU limits are genuinely contested, and this chart does not pretend otherwise.
+    #
+    #   Against: CPU is compressible. A limit throttles via CFS quota even when the
+    #   node is idle, and bursty request/response services pay tail latency for
+    #   capacity nobody else wanted. "Requests for scheduling, no CPU limit" is a
+    #   defensible production stance.
+    #
+    #   For: without a limit, a pod's usable CPU depends on what else landed on the
+    #   node, so latency becomes a function of scheduling luck and load tests stop
+    #   being reproducible. Limits also make a runaway loop a local problem.
+    #
+    # We set one, because this lab has an HPA driven by /api/v1/burn and a CPU
+    # utilisation target is a fraction of *requests* — leaving CPU unbounded makes
+    # that number drift with node capacity and the scaling demo unreproducible.
+    cpu: 500m
+
+probes:
+  # Three probes, three genuinely different questions. Wiring two of them to the same
+  # endpoint is the usual mistake and it silently removes a safety net.
+  startup:
+    # "Has it finished booting?" — suspends liveness until it passes, so a slow start
+    # never looks like a hang. failureThreshold * periodSeconds is the start budget:
+    # 30 * 2 = 60s here, comfortably over the 5s warm-up.
+    enabled: true
+    path: /healthz
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 30
+  liveness:
+    # "Is the process wedged?" — the only correct response to a failure is a restart,
+    # so this must point at /healthz, which depends on nothing. Pointing liveness at
+    # /readyz turns a slow dependency into a cluster-wide restart loop.
+    enabled: true
+    path: /healthz
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    # "Should it receive traffic right now?" — may fail and recover freely. /readyz
+    # reports false while warming up and again the moment SIGTERM arrives.
+    enabled: true
+    path: /readyz
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+    successThreshold: 1
+
+autoscaling:
+  # Off by default: an HPA on a chart whose metrics-server is missing produces a
+  # confusing <unknown>/60% and quietly stops managing replicas.
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 60
+  # 0 disables the memory metric. A memory-target HPA on a JVM or any process with a
+  # lazy allocator scales up and never back down.
+  targetMemoryUtilizationPercentage: 0
+  behavior: {}
+
+podDisruptionBudget:
+  enabled: true
+  # A PDB constrains *voluntary* disruption (drains, evictions) — it does nothing for
+  # a node that catches fire.
+  #
+  # maxUnavailable: 1 rather than minAvailable: <replicaCount>: a PDB that demands
+  # every replica stay up is unsatisfiable, and `kubectl drain` then blocks forever
+  # on a cluster that is behaving perfectly. Expressed against unavailability, the
+  # budget keeps working when the HPA changes the replica count underneath it.
+  maxUnavailable: 1
+  # Set this instead to express the budget as a floor. Only one of the two may be
+  # set; the schema enforces it.
+  minAvailable: ""
+
+networkPolicy:
+  # On by default: default-deny is the safe state, and every ci/ value set installs
+  # with it and passes `helm test`, so it is proven rather than assumed.
+  #
+  # The one value that must match the cluster is controllerNamespace. A policy that
+  # names the wrong namespace does not error — it silently blackholes traffic, and
+  # the Gateway just starts returning 503 for a Service whose endpoints look healthy.
+  # Change it, or set enabled=false, before installing anywhere but this lab.
+  #
+  # This also needs a CNI that enforces NetworkPolicy. k3s ships one; on a cluster
+  # without one the object applies cleanly and does exactly nothing, which is a much
+  # worse failure mode than an error.
+  enabled: true
+  controllerNamespace: traefik
+  # The chart's own `helm test` pod has to reach the Service it checks. Turning this
+  # off makes `helm test` fail against a working release.
+  allowHelmTest: true
+  # Allowing egress to kube-dns is not optional: deny-all egress without it breaks
+  # every DNS lookup the pod makes, which looks like a hung application.
+  allowDNS: true
+  dnsNamespace: kube-system
+  extraIngress: []
+  extraEgress: []
+
+metrics:
+  # /metrics is always served by the app; this gates the ServiceMonitor that tells a
+  # Prometheus Operator to scrape it.
+  path: /metrics
+  serviceMonitor:
+    # Off by default because the CRD is a cluster-scoped prerequisite this lab does
+    # not install yet (that is Part 3). Rendering a ServiceMonitor into a cluster
+    # without monitoring.coreos.com fails the install outright.
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    # Extra labels for the Prometheus instance's serviceMonitorSelector to match.
+    labels: {}
+    relabelings: []
+    metricRelabelings: []
+
+# Spread replicas across nodes so losing one node cannot take the whole service with
+# it. labelSelector is filled in from the chart's selectorLabels when omitted — it
+# depends on the release name, which cannot be written down here.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    # ScheduleAnyway, not DoNotSchedule: with 2 agents and an HPA that can reach 6
+    # replicas, a hard constraint makes pods 3-and-up unschedulable. Spreading is a
+    # preference here, not a guarantee.
+    whenUnsatisfiable: ScheduleAnyway
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []
+
+tests:
+  # Image used by `helm test`. Runs inside the cluster, so it reaches the Service by
+  # its cluster DNS name — no --resolve, no CA, none of the host-side machinery.
+  image:
+    repository: busybox
+    tag: "1.37"
+    pullPolicy: IfNotPresent

@@ -48,6 +48,10 @@ check_tool helm        helm                    helm version
 check_tool kubeconform kubeconform             kubeconform -v
 check_tool kube-score  kube-score              kube-score version
 check_tool ct          aqua:helm/chart-testing ct version
+# `ct lint` shells out to these two. Missing, it fails with a message about a config
+# file rather than about them, which is a confusing place to start debugging.
+check_tool yamale      pipx:yamale             yamale --version
+check_tool yamllint    pipx:yamllint           yamllint --version
 
 # helm-unittest is a helm plugin, not a mise tool, so it needs its own check.
 if helm plugin list 2>/dev/null | grep -q '^unittest'; then

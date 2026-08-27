@@ -1,0 +1,33 @@
+# The compatibility path: Ingress instead of Gateway API.
+#
+# Kept installable rather than merely renderable, because "we still support Ingress"
+# is a claim that decays silently. Traefik serves both APIs, so this is a real end-to-
+# end install and not a template-only exercise.
+route:
+  httpRoute:
+    enabled: false
+  ingress:
+    enabled: true
+    className: traefik
+    hosts:
+      - host: demo-api-ingress.k3d.local
+        paths:
+          - path: /
+            pathType: Prefix
+
+# Also the one set that installs with the NetworkPolicy off, so the off state of a
+# default-on toggle gets a real install rather than only a unit test.
+networkPolicy:
+  enabled: false
+
+# kube-score correctly reports "no NetworkPolicy selects this pod" for the value set
+# above. The finding is right; it is also the entire point of this file, so it is
+# silenced here — in the one value set that turns the policy off — rather than
+# repo-wide in scripts/lint.sh, where it would also stop being reported for the
+# default install, which is where it would actually matter.
+podAnnotations:
+  kube-score/ignore: pod-networkpolicy
+
+config:
+  env: ci-ingress-compat
+  message: "routed through the legacy Ingress API"
