@@ -1,0 +1,41 @@
+# The app of apps.
+#
+# This is the ONLY Application bootstrap.sh applies, and it is the last imperative act in
+# the whole lab. It watches a directory of Application manifests in Git; everything else
+# the cluster runs arrives because Argo CD read it there. Adding a workload from here on
+# is a commit, not a command.
+#
+# The pattern's payoff is that this file never changes again. Its payoff is also its
+# trap: `prune: true` means deleting a child Application file deletes the workload, which
+# is correct and still surprising the first time.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  # Without this finalizer, deleting the root Application orphans every child instead of
+  # cascading. Orphans are worse than either outcome: nothing owns them and nothing
+  # reconciles them.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: lab
+
+  source:
+    repoURL: http://gitea-http.gitea.svc.cluster.local:3000/lab/k3d-lab.git
+    targetRevision: HEAD
+    path: gitops/apps
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      # Remove children whose manifest has left the repo.
+      prune: true
+      # Revert anything changed in the cluster that Git did not ask for. This is the
+      # line that makes `kubectl delete deploy` a temporary condition.
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

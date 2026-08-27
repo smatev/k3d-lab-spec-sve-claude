@@ -1,0 +1,59 @@
+# Gitea — the Git server Argo CD reconciles from.
+#
+# Part 3's whole point is that the cluster pulls its desired state from Git instead of
+# from whoever last ran `helm install`. That needs a Git remote the cluster can reach.
+# GitHub is not it: this lab has no DNS contract, commits no credentials, and has to
+# come up on a machine with no account anywhere. So the Git server lives in the cluster,
+# like everything else the lab depends on.
+#
+# Sized for a lab rather than for people. The chart's defaults are an HA Postgres *and*
+# a Valkey cluster — five extra pods to store one repository.
+
+# Both of these default to ENABLED, and both pull bitnami subcharts from Docker Hub.
+# Turning them off is the difference between a 7-pod install and a 1-pod install.
+postgresql-ha:
+  enabled: false
+valkey-cluster:
+  enabled: false
+# Already false upstream. Pinned anyway so a chart bump cannot switch them on unnoticed.
+postgresql:
+  enabled: false
+valkey:
+  enabled: false
+
+# sqlite on a PVC. k3s ships local-path, so a default StorageClass exists.
+persistence:
+  enabled: true
+  size: 2Gi
+
+replicaCount: 1
+
+gitea:
+  admin:
+    username: lab
+    # A lab credential in plain sight, deliberately. This Gitea is reachable only from
+    # inside the cluster and through an explicit port-forward, it holds one throwaway
+    # repository, and `make down` destroys it. Generating a random password instead
+    # would mean bootstrap writing a file outside the repo and reading it back later —
+    # state the repo cannot describe, which is the thing this lab is built to avoid.
+    password: lab-not-a-secret
+    email: lab@k3d.local
+    passwordMode: keepUpdated
+
+  config:
+    database:
+      DB_TYPE: sqlite3
+    server:
+      # Argo CD clones over in-cluster Service DNS, so that is what Gitea must believe
+      # its own address is — ROOT_URL is what it puts in the clone URLs it advertises.
+      ROOT_URL: http://gitea-http.gitea.svc.cluster.local:3000/
+      # No gravatar fetches, no version pings. The lab must work with no internet.
+      OFFLINE_MODE: true
+    service:
+      DISABLE_REGISTRATION: true
+    repository:
+      # New repos are public, so Argo CD needs no credential to clone and the repo
+      # Secret can stay out of the bootstrap entirely.
+      DEFAULT_PRIVATE: public
+    security:
+      INSTALL_LOCK: true

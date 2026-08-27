@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 #
-# Bootstrap the lab cluster: Gateway API CRDs, cert-manager + a local CA, Traefik, and
-# the shared Gateway.
+# Bootstrap the lab cluster: Gateway API CRDs, cert-manager + a local CA, Traefik, the
+# shared Gateway, and then the GitOps machinery — an in-cluster Git server and Argo CD.
 #
 # Idempotent by construction — every step is `apply` or `upgrade --install` followed by
 # an explicit wait, so running it twice changes nothing. `make bootstrap` proves it.
 #
 # Ordering matters in exactly one place: Traefik's Gateway API provider needs the CRDs
 # to exist when it starts, so the CRDs go first.
+#
+# Where this script stops is the interesting part. It installs Argo CD and applies ONE
+# Application — the root. Every workload after that arrives because it was committed,
+# not because anything here applied it. `make gitops` publishes the repo to the
+# in-cluster Gitea and the cluster converges on its own.
 
 set -euo pipefail
 
@@ -16,6 +21,8 @@ readonly HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 readonly CERT_MANAGER_VERSION="v1.21.1"
 readonly TRAEFIK_CHART_VERSION="41.3.0"
+readonly GITEA_CHART_VERSION="12.7.0"
+readonly ARGOCD_CHART_VERSION="10.4.0"
 
 # Pin the context on every call. This repo touches k3d-lab and nothing else — never the
 # operator's current context, whatever that happens to be.
@@ -127,6 +134,69 @@ install_gateway() {
   k -n gateway wait --for=condition=Programmed --timeout=120s gateway/shared-gateway
 }
 
+# ---------------------------------------------------------------------------
+# 6. Gitea — the Git server Argo CD reconciles from
+# ---------------------------------------------------------------------------
+install_gitea() {
+  step "Gitea (chart ${GITEA_CHART_VERSION})"
+  k apply -f "${HERE}/gitops/namespaces.yaml"
+
+  h repo add gitea-charts https://dl.gitea.com/charts/ --force-update >/dev/null
+  h repo update gitea-charts >/dev/null
+
+  h upgrade --install gitea gitea-charts/gitea \
+    --version "${GITEA_CHART_VERSION}" \
+    --namespace gitea \
+    --values "${HERE}/gitea.values.yaml" \
+    --wait --timeout 5m
+
+  # A Deployment despite the PVC — the chart dropped the StatefulSet years ago. Note
+  # gitea-http is a *headless* Service (clusterIP: None); it resolves to pod IPs, which
+  # is fine for both Argo CD's clone and the HTTPRoute, but it means `kubectl get svc`
+  # shows no ClusterIP and that is not a fault.
+  k -n gitea rollout status deployment/gitea --timeout=300s
+}
+
+# ---------------------------------------------------------------------------
+# 7. Argo CD
+# ---------------------------------------------------------------------------
+install_argocd() {
+  step "Argo CD (chart ${ARGOCD_CHART_VERSION})"
+  h repo add argo https://argoproj.github.io/argo-helm --force-update >/dev/null
+  h repo update argo >/dev/null
+
+  h upgrade --install argocd argo/argo-cd \
+    --version "${ARGOCD_CHART_VERSION}" \
+    --namespace argocd \
+    --values "${HERE}/argocd.values.yaml" \
+    --wait --timeout 10m
+
+  k -n argocd rollout status deploy/argocd-server --timeout=300s
+  k -n argocd rollout status deploy/argocd-repo-server --timeout=300s
+  k -n argocd rollout status statefulset/argocd-application-controller --timeout=300s
+
+  # Applying an Application before its CRD is served is the same race as the Gateway API
+  # CRDs above, just later in the script.
+  k wait --for=condition=Established --timeout=90s \
+    crd/applications.argoproj.io crd/appprojects.argoproj.io
+}
+
+# ---------------------------------------------------------------------------
+# 8. The GitOps seed — routes, the project, and exactly one Application
+# ---------------------------------------------------------------------------
+install_gitops() {
+  step "GitOps seed (AppProject + root Application)"
+  k apply -f "${HERE}/gitops/httproutes.yaml"
+  k apply -f "${HERE}/gitops/project.yaml"
+  k apply -f "${HERE}/gitops/root-app.yaml"
+
+  # Deliberately no wait. The root Application points at a repository that does not
+  # exist until `make gitops` pushes it, so a fresh bootstrap legitimately leaves it
+  # Unknown. Blocking here would make the first bootstrap fail by design.
+  printf '    root Application applied. It has nothing to sync until:\n'
+  printf '      make gitops    (publish the chart + this repo, then wait for convergence)\n'
+}
+
 main() {
   require_cluster
   install_gateway_api
@@ -134,6 +204,9 @@ main() {
   install_local_ca
   install_traefik
   install_gateway
+  install_gitea
+  install_argocd
+  install_gitops
   step "Bootstrap complete."
 }
 
