@@ -1,0 +1,482 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "demo-api values",
+  "description": "Helm validates supplied values against this file BEFORE rendering a single template. That ordering is the whole point: a typo becomes a named error instead of subtly wrong YAML that applies cleanly and misbehaves in production. `additionalProperties: false` is what turns `replicasCount: 5` from a silently ignored key into a failed install.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "route", "secret", "service"],
+
+  "allOf": [
+    {
+      "$comment": "route.httpRoute and route.ingress are mutually exclusive. Written as if/then rather than the more obvious not/allOf: both express the same constraint, but a failed `not` reports only \"'not' failed\" at the document root, while this reports the offending path — 'at /route/ingress/enabled: value must be false'. Error messages are part of the interface. templates/_helpers.tpl repeats the rule as a `fail` with the full explanation of why.",
+      "if": {
+        "type": "object",
+        "required": ["route"],
+        "properties": {
+          "route": {
+            "type": "object",
+            "required": ["httpRoute"],
+            "properties": {
+              "httpRoute": {
+                "type": "object",
+                "required": ["enabled"],
+                "properties": { "enabled": { "const": true } }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "route": {
+            "properties": {
+              "ingress": {
+                "properties": {
+                  "enabled": {
+                    "description": "Must be false while route.httpRoute.enabled is true — pick one routing API.",
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "A PodDisruptionBudget accepts minAvailable or maxUnavailable, never both. An empty string means unset.",
+      "if": {
+        "type": "object",
+        "required": ["podDisruptionBudget"],
+        "properties": {
+          "podDisruptionBudget": {
+            "type": "object",
+            "required": ["minAvailable"],
+            "properties": {
+              "minAvailable": { "not": { "const": "" } }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "podDisruptionBudget": {
+            "properties": {
+              "maxUnavailable": {
+                "description": "Must be cleared (\"\") when podDisruptionBudget.minAvailable is set — a PDB accepts exactly one of them.",
+                "const": ""
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+
+  "properties": {
+    "global": {
+      "description": "Reserved by Helm for values shared with subcharts. Unused here, but it must be accepted or additionalProperties:false would reject a perfectly ordinary --set global.foo.",
+      "type": "object"
+    },
+
+    "replicaCount": {
+      "description": "Ignored when autoscaling.enabled is true.",
+      "type": "integer",
+      "minimum": 1
+    },
+
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "properties": {
+        "repository": {
+          "description": "Must be the in-cluster registry name (k3d-registry:5000), not the host-facing localhost:5000.",
+          "type": "string",
+          "minLength": 1,
+          "not": {
+            "$comment": "Reject the host-facing registry name outright: it resolves from the terminal and nowhere inside the cluster, so the mistake shows up as ImagePullBackOff long after the push succeeded.",
+            "pattern": "^localhost:"
+          }
+        },
+        "tag": {
+          "description": "Empty means .Chart.AppVersion. `latest` is rejected: it makes the running image unidentifiable and every restart a coin flip.",
+          "type": "string",
+          "not": { "enum": ["latest"] }
+        },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string" } }
+      }
+    },
+
+    "nameOverride": { "type": "string", "maxLength": 63 },
+    "fullnameOverride": { "type": "string", "maxLength": 63 },
+
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "automount": { "type": "boolean" },
+        "annotations": { "type": "object" },
+        "name": { "type": "string" }
+      }
+    },
+
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" },
+
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "enum": ["RollingUpdate", "Recreate"] },
+            "rollingUpdate": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "maxUnavailable": { "type": ["integer", "string"] },
+                "maxSurge": { "type": ["integer", "string"] }
+              }
+            }
+          }
+        },
+        "revisionHistoryLimit": { "type": "integer", "minimum": 0 },
+        "terminationGracePeriodSeconds": {
+          "description": "Must exceed lifecycle.preStop.sleepSeconds plus the app's own 20s graceful-shutdown timeout, or the kubelet SIGKILLs a pod that is still draining.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preStop": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "sleepSeconds": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "env": { "type": "string" },
+        "message": { "type": "string" },
+        "warmupSeconds": { "type": ["integer", "number"], "minimum": 0 },
+        "extraEnv": {
+          "description": "Rendered into the ConfigMap as strings — a ConfigMap holds nothing else.",
+          "type": "object",
+          "additionalProperties": { "type": ["string", "integer", "number", "boolean"] }
+        }
+      }
+    },
+
+    "secret": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "description": "Local development only. Mutually exclusive with existingSecret; exactly one path must be chosen, and _helpers.tpl fails loudly on both zero and two.",
+          "type": "boolean"
+        },
+        "existingSecret": { "type": "string" },
+        "key": { "type": "string", "minLength": 1 },
+        "value": { "type": "string" },
+        "mountPath": { "type": "string", "pattern": "^/" }
+      }
+    },
+
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "annotations": { "type": "object" }
+      }
+    },
+
+    "containerPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "httpRoute": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "annotations": { "type": "object" },
+            "parentRefs": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "namespace": { "type": "string" },
+                  "sectionName": { "type": "string" },
+                  "port": { "type": "integer" }
+                }
+              }
+            },
+            "hostnames": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "localhost": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "hostname": { "type": "string", "minLength": 1 },
+                "pathPrefix": { "type": "string", "pattern": "^/" }
+              }
+            }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "className": { "type": "string" },
+            "annotations": { "type": "object" },
+            "hosts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["host", "paths"],
+                "additionalProperties": false,
+                "properties": {
+                  "host": { "type": "string" },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "pathType"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": { "type": "string" },
+                        "pathType": { "enum": ["Prefix", "Exact", "ImplementationSpecific"] }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "tls": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
+    },
+
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": ["string", "number"] },
+            "memory": { "type": "string" },
+            "ephemeral-storage": { "type": "string" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": ["string", "number"] },
+            "memory": {
+              "description": "Always set. Memory is incompressible: without a limit one leaking pod takes down a node.",
+              "type": "string"
+            },
+            "ephemeral-storage": { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "startup": { "$ref": "#/definitions/probe" },
+        "liveness": {
+          "allOf": [
+            { "$ref": "#/definitions/probe" },
+            {
+              "$comment": "Liveness must not point at a readiness endpoint. The only response to a liveness failure is a restart, so aiming it at /readyz turns a slow dependency into a cluster-wide restart loop.",
+              "properties": {
+                "path": { "not": { "pattern": "readyz|ready$" } }
+              }
+            }
+          ]
+        },
+        "readiness": { "$ref": "#/definitions/probe" }
+      }
+    },
+
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "targetMemoryUtilizationPercentage": {
+          "description": "0 disables the memory metric.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "behavior": { "type": "object" }
+      }
+    },
+
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "maxUnavailable": { "type": ["integer", "string"] },
+        "minAvailable": { "type": ["integer", "string"] }
+      }
+    },
+
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "controllerNamespace": {
+          "description": "Namespace the ingress controller runs in. A wrong value does not error — it silently blackholes traffic.",
+          "type": "string",
+          "minLength": 1
+        },
+        "allowHelmTest": { "type": "boolean" },
+        "allowDNS": { "type": "boolean" },
+        "dnsNamespace": { "type": "string", "minLength": 1 },
+        "extraIngress": { "type": "array", "items": { "type": "object" } },
+        "extraEgress": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "description": "Requires the Prometheus Operator CRDs, which are a cluster-scoped prerequisite this lab does not install.",
+              "type": "boolean"
+            },
+            "interval": { "type": "string", "pattern": "^[0-9]+(ms|s|m|h)$" },
+            "scrapeTimeout": { "type": "string", "pattern": "^[0-9]+(ms|s|m|h)$" },
+            "labels": { "type": "object" },
+            "relabelings": { "type": "array", "items": { "type": "object" } },
+            "metricRelabelings": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
+    },
+
+    "topologySpreadConstraints": {
+      "description": "labelSelector is filled in from the chart's selectorLabels when omitted — it depends on the release name and so cannot be written down in values.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["maxSkew", "topologyKey", "whenUnsatisfiable"],
+        "properties": {
+          "maxSkew": { "type": "integer", "minimum": 1 },
+          "topologyKey": { "type": "string" },
+          "whenUnsatisfiable": { "enum": ["DoNotSchedule", "ScheduleAnyway"] },
+          "labelSelector": { "type": "object" },
+          "minDomains": { "type": "integer" },
+          "nodeAffinityPolicy": { "type": "string" },
+          "nodeTaintsPolicy": { "type": "string" },
+          "matchLabelKeys": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array", "items": { "type": "object" } },
+    "affinity": { "type": "object" },
+
+    "extraEnv": {
+      "description": "Raw container env entries, appended as-is. Use config.extraEnv for anything that belongs in the ConfigMap — only that route gets a rollout on change.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string" } }
+      }
+    },
+    "extraVolumes": { "type": "array", "items": { "type": "object" } },
+    "extraVolumeMounts": { "type": "array", "items": { "type": "object" } },
+
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": { "type": "string" },
+            "tag": { "type": "string", "not": { "enum": ["latest"] } },
+            "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+          }
+        }
+      }
+    }
+  },
+
+  "definitions": {
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "path": { "type": "string", "pattern": "^/" },
+        "periodSeconds": { "type": "integer", "minimum": 1 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "failureThreshold": { "type": "integer", "minimum": 1 },
+        "successThreshold": { "type": "integer", "minimum": 1 },
+        "initialDelaySeconds": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

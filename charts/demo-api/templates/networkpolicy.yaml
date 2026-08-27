@@ -1,0 +1,93 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default-deny for the app pods, with holes cut for exactly what they need.
+#
+# Listing a policyType with no matching rule is what makes it a deny: `Egress` appears
+# below with a single rule, so everything not named there is dropped. Omitting the
+# policyType entirely would leave that direction wide open — a NetworkPolicy is
+# additive, and "no policy" means "allow", which is the opposite of how firewall rules
+# usually read.
+#
+# This needs a CNI that enforces NetworkPolicy. k3s ships one; several managed
+# clusters do not, and there the object applies cleanly and silently does nothing.
+#
+# `egress:` is emitted only when there is a rule to put under it. A bare key renders as
+# `egress: null`, which the API server accepts and treats identically to deny-all — so
+# the behaviour is right either way, but the stored object then differs from what the
+# chart appears to say, and that is the kind of small dishonesty that costs an hour
+# later.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "demo-api.fullname" . }}
+  labels:
+    {{- include "demo-api.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "demo-api.selectorLabels" . | nindent 6 }}
+    matchExpressions:
+      # The `helm test` pod carries the same recommended labels as the application
+      # pods, so without this it would be governed by the policy too — and a test pod
+      # whose egress is denied cannot reach the Service it exists to check. The policy
+      # describes the application; the test harness is not part of it.
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values:
+          - test
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              # kubernetes.io/metadata.name is set automatically on every namespace by
+              # the API server, so this works without labelling anything by hand.
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.controllerNamespace }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- if .Values.networkPolicy.allowHelmTest }}
+    # The chart ships a `helm test` hook that talks to the Service, and a default-deny
+    # policy blocks it — from both directions, which is easy to half-fix. Excluding the
+    # test pod from podSelector (above) frees its *egress*; this rule is what lets the
+    # app pods *accept* the connection. Miss this half and the symptom is a test pod
+    # that reports "connection refused" against a Service with healthy endpoints.
+    #
+    # Scoped as tightly as the API allows: a podSelector with no namespaceSelector
+    # matches only the release's own namespace, and the instance label pins it to this
+    # release rather than any pod that labels itself a test.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: test
+      ports:
+        - port: http
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or .Values.networkPolicy.allowDNS .Values.networkPolicy.extraEgress }}
+  egress:
+    {{- if .Values.networkPolicy.allowDNS }}
+    # Not optional in practice. Deny-all egress without a DNS hole breaks every name
+    # lookup the pod makes, and the symptom — long hangs, then connection errors — is
+    # nothing like "the firewall blocked it", which makes it a genuinely nasty
+    # afternoon.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+{{- end }}

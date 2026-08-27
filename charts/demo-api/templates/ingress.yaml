@@ -1,0 +1,48 @@
+{{- if .Values.route.ingress.enabled }}
+# COMPATIBILITY TOGGLE. Off by default.
+#
+# The Ingress API is feature-frozen — it still works, it still gets security fixes,
+# and it will not gain another feature. Everything new happens in Gateway API. The
+# community ingress-nginx controller was archived in March 2026; this lab uses Traefik,
+# which implements both.
+#
+# The template is kept because supporting two routing APIs across a migration window
+# is exactly what real charts are doing right now, and because it makes the "exactly
+# one of these" constraint something you can actually test.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "demo-api.fullname" . }}
+  labels:
+    {{- include "demo-api.labels" . | nindent 4 }}
+  {{- with .Values.route.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.route.ingress.className }}
+  # ingressClassName, not the long-deprecated kubernetes.io/ingress.class annotation.
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.route.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.route.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            # pathType is required. Omitting it used to default to ImplementationSpecific
+            # and mean whatever the controller felt like.
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "demo-api.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

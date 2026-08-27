@@ -1,0 +1,31 @@
+# Patterns to ignore when building packages.
+# Matched against the chart directory, one pattern per line.
+
+# --- the two that actually matter here -------------------------------------
+#
+# tests/ holds helm-unittest specs and ci/ holds the value sets chart-testing
+# installs. Both are development inputs: they are read from the working tree, never
+# from the packaged artifact, and shipping them would put megabytes of test fixtures
+# into every `helm pull`.
+#
+# The leading slash is load-bearing. .helmignore matches like .gitignore: a pattern
+# with no leading slash matches a directory of that name at ANY depth, so a bare
+# `tests/` silently swallows templates/tests/ as well — and templates/tests/ is the
+# `helm test` hook, which very much needs to ship. The symptom is
+# "TEST SUITE: None" from a release that plainly has a test, and nothing anywhere
+# says why. Anchored to the chart root, it excludes only what it should.
+/tests/
+/ci/
+
+# --- the usual noise --------------------------------------------------------
+.DS_Store
+.git/
+.gitignore
+.idea/
+.vscode/
+*.tmproj
+*.swp
+*.bak
+*.tgz
+*.orig
+*~

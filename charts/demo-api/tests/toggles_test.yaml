@@ -1,0 +1,237 @@
+# Every `enabled` toggle in the chart, in both states.
+#
+# This is the suite that makes the others safe to trust: a toggle nobody tests in its
+# off state is a toggle that eventually stops working in its off state, and the
+# failure is always discovered by someone who needed it off.
+suite: enabled toggles
+chart:
+  version: 0.1.0
+  appVersion: "0.1.0"
+
+tests:
+  # --- serviceAccount ------------------------------------------------------
+  - it: serviceAccount.create=true renders a ServiceAccount
+    templates:
+      - templates/serviceaccount.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ServiceAccount
+
+  - it: serviceAccount.create=false renders none, and the pod falls back to default
+    templates:
+      - templates/serviceaccount.yaml
+    set:
+      serviceAccount.create: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  # --- secret --------------------------------------------------------------
+  - it: secret.create=true templates a Secret
+    templates:
+      - templates/secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: stringData.token
+          value: dev-only-not-a-real-secret
+
+  - it: secret.create=false templates none
+    templates:
+      - templates/secret.yaml
+    set:
+      secret.create: false
+      secret.existingSecret: externally-managed
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  # --- autoscaling ---------------------------------------------------------
+  - it: autoscaling.enabled=false renders no HPA
+    templates:
+      - templates/hpa.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: autoscaling.enabled=true renders an autoscaling/v2 HPA
+    templates:
+      - templates/hpa.yaml
+    set:
+      autoscaling.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isAPIVersion:
+          of: autoscaling/v2
+      - equal:
+          path: spec.scaleTargetRef.name
+          value: RELEASE-NAME-demo-api
+      - equal:
+          path: spec.metrics[0].resource.name
+          value: cpu
+      - equal:
+          path: spec.metrics[0].resource.target.averageUtilization
+          value: 60
+
+  - it: a zero memory target drops the memory metric rather than rendering a zero
+    # Utilization: 0 would mean "scale up immediately, forever". Zero has to mean off.
+    templates:
+      - templates/hpa.yaml
+    set:
+      autoscaling.enabled: true
+    asserts:
+      - lengthEqual:
+          path: spec.metrics
+          count: 1
+
+  - it: renders both metrics when both targets are set
+    templates:
+      - templates/hpa.yaml
+    set:
+      autoscaling.enabled: true
+      autoscaling.targetMemoryUtilizationPercentage: 80
+    asserts:
+      - lengthEqual:
+          path: spec.metrics
+          count: 2
+
+  # --- podDisruptionBudget -------------------------------------------------
+  - it: podDisruptionBudget.enabled=true renders a PDB
+    templates:
+      - templates/pdb.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isAPIVersion:
+          of: policy/v1
+
+  - it: podDisruptionBudget.enabled=false renders none
+    templates:
+      - templates/pdb.yaml
+    set:
+      podDisruptionBudget.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  # --- networkPolicy -------------------------------------------------------
+  - it: networkPolicy.enabled=false renders none
+    templates:
+      - templates/networkpolicy.yaml
+    set:
+      networkPolicy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: networkPolicy.enabled=true denies by default and opens only what is needed
+    templates:
+      - templates/networkpolicy.yaml
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      # Naming a policyType with no matching rule is what makes a direction deny.
+      - contains:
+          path: spec.policyTypes
+          content: Ingress
+      - contains:
+          path: spec.policyTypes
+          content: Egress
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: traefik
+      # Deny-all egress with no DNS hole breaks every name lookup the pod makes, and
+      # the symptom looks nothing like a firewall.
+      - equal:
+          path: spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: kube-system
+
+  - it: lets its own helm-test pod through, from both directions
+    # A default-deny policy blocks the chart's own test twice over, and fixing one
+    # half looks like fixing it. The exclusion below frees the test pod's egress; the
+    # ingress rule is what lets the app pods accept the connection.
+    templates:
+      - templates/networkpolicy.yaml
+    asserts:
+      - contains:
+          path: spec.podSelector.matchExpressions
+          content:
+            key: app.kubernetes.io/component
+            operator: NotIn
+            values:
+              - test
+      - contains:
+          path: spec.ingress
+          content:
+            from:
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: RELEASE-NAME
+                    app.kubernetes.io/component: test
+            ports:
+              - port: http
+                protocol: TCP
+
+  - it: closes the helm-test hole when asked
+    templates:
+      - templates/networkpolicy.yaml
+    set:
+      networkPolicy.allowHelmTest: false
+    asserts:
+      - lengthEqual:
+          path: spec.ingress
+          count: 1
+
+  - it: closes the DNS hole when asked, leaving egress fully denied
+    # The off state of allowDNS is a foot-gun with a very confusing symptom — every
+    # name lookup hangs and the app looks wedged rather than firewalled — so it is
+    # asserted rather than assumed to be unreachable.
+    templates:
+      - templates/networkpolicy.yaml
+    set:
+      networkPolicy.allowDNS: false
+    asserts:
+      - contains:
+          path: spec.policyTypes
+          content: Egress
+      - notExists:
+          path: spec.egress
+
+  # --- serviceMonitor ------------------------------------------------------
+  - it: metrics.serviceMonitor.enabled=false renders none
+    # Default off: the CRD is a cluster-scoped prerequisite this lab does not install.
+    templates:
+      - templates/servicemonitor.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: metrics.serviceMonitor.enabled=true renders a ServiceMonitor scraping by port name
+    templates:
+      - templates/servicemonitor.yaml
+    set:
+      metrics.serviceMonitor.enabled: true
+      metrics.serviceMonitor.labels:
+        release: kube-prometheus-stack
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isAPIVersion:
+          of: monitoring.coreos.com/v1
+      - equal:
+          path: spec.endpoints[0].port
+          value: http
+      - equal:
+          path: spec.endpoints[0].path
+          value: /metrics
+      # Without a label the Prometheus serviceMonitorSelector matches, this object is
+      # valid, created, and scraped by nobody.
+      - equal:
+          path: metadata.labels.release
+          value: kube-prometheus-stack

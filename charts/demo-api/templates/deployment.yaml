@@ -1,0 +1,203 @@
+{{- include "demo-api.validateValues" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "demo-api.fullname" . }}
+  labels:
+    {{- include "demo-api.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  # Omitted entirely when the HPA owns the replica count. Templating both means every
+  # `helm upgrade` resets replicas to the chart default and undoes the autoscaler,
+  # which then scales back up — a rollout loop that looks like flapping.
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: {{ .Values.deployment.revisionHistoryLimit }}
+  strategy:
+    type: {{ .Values.deployment.strategy.type }}
+    {{- if eq .Values.deployment.strategy.type "RollingUpdate" }}
+    rollingUpdate:
+      {{- toYaml .Values.deployment.strategy.rollingUpdate | nindent 6 }}
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "demo-api.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # THE annotation. Without it, editing a ConfigMap value changes nothing: the
+        # Deployment's pod template is byte-identical, so no new ReplicaSet is created
+        # and the pods keep the environment they started with. Config "applied" and
+        # nothing happens is one of the classic Kubernetes bugs.
+        #
+        # Hashing the *rendered* ConfigMap rather than the values means the rollout
+        # fires for any change that reaches the object, including one arriving through
+        # a template.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.secret.create }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "demo-api.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "demo-api.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+      terminationGracePeriodSeconds: {{ .Values.deployment.terminationGracePeriodSeconds }}
+      securityContext:
+        # Pod-level: applies to every container, including any future sidecar.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          # RuntimeDefault is the container runtime's syscall filter. Unconfined is the
+          # default when this is unset, which is a much larger kernel attack surface
+          # for no benefit to a Python web server.
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Chart.Name }}
+          image: {{ include "demo-api.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            # Container-level. Every one of these is a real hardening step, not
+            # box-ticking:
+            allowPrivilegeEscalation: false   # no setuid path to more privilege
+            readOnlyRootFilesystem: true      # nothing writes to the image layer
+            runAsNonRoot: true
+            runAsUser: 10001                  # matches the UID baked into the image
+            capabilities:
+              drop:
+                - ALL                         # the app binds :8000, not :80 — no NET_BIND_SERVICE needed
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          env:
+            - name: APP_VERSION
+              value: {{ default .Chart.AppVersion .Values.image.tag | quote }}
+            - name: PORT
+              value: {{ .Values.containerPort | quote }}
+            - name: SECRET_PATH
+              value: {{ printf "%s/%s" (trimSuffix "/" .Values.secret.mountPath) .Values.secret.key | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            # APP_ENV, APP_MESSAGE, WARMUP_SECONDS and anything in config.extraEnv.
+            # Sourced as a block so adding a config key needs no template change — the
+            # checksum annotation above is what turns that into an actual rollout.
+            - configMapRef:
+                name: {{ include "demo-api.fullname" . }}
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            # Guards the *boot*. While it is failing, the liveness probe is suspended,
+            # so a slow start can never be mistaken for a hang and restart-looped.
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            # /healthz, never /readyz. A liveness probe that fails when a dependency is
+            # slow converts a slow dependency into a cluster-wide restart loop, which
+            # is strictly worse than the original problem.
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            # /readyz: false while warming up, and false again the instant SIGTERM
+            # arrives. That second transition is half of the zero-downtime rollout —
+            # the preStop sleep below is the other half.
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+            successThreshold: {{ .Values.probes.readiness.successThreshold }}
+          {{- end }}
+          {{- if .Values.lifecycle.preStop.enabled }}
+          lifecycle:
+            preStop:
+              # Endpoint removal and preStop run in parallel, so a terminating pod keeps
+              # receiving traffic for as long as it takes every kube-proxy and every
+              # Traefik replica to observe the change. Sleeping here holds the pod open
+              # across that window; SIGTERM is only sent once this returns.
+              #
+              # exec rather than the newer lifecycle.preStop.sleep (SleepAction): exec
+              # works on every version this chart's kubeVersion admits.
+              exec:
+                command:
+                  - sleep
+                  - {{ .Values.lifecycle.preStop.sleepSeconds | quote }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: secret
+              mountPath: {{ .Values.secret.mountPath }}
+              readOnly: true
+            - name: tmp
+              # readOnlyRootFilesystem: true means the process cannot write anywhere in
+              # the image. Python wants a scratch directory for the odd temp file, so
+              # it gets an explicit emptyDir instead of an exception to the rule.
+              mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: secret
+          secret:
+            secretName: {{ include "demo-api.secretName" . }}
+            # 0400: readable by the pod's user, nobody else. The default 0644 makes it
+            # world-readable inside the container.
+            defaultMode: 0400
+        - name: tmp
+          emptyDir: {}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range $c := . }}
+        -
+          {{- toYaml (omit $c "labelSelector") | nindent 10 }}
+          labelSelector:
+            {{- if $c.labelSelector }}
+            {{- toYaml $c.labelSelector | nindent 12 }}
+            {{- else }}
+            matchLabels:
+              {{- include "demo-api.selectorLabels" $ | nindent 14 }}
+            {{- end }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

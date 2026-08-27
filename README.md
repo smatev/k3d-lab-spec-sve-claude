@@ -36,6 +36,35 @@ object changes, which is the property that actually matters.)
 
 `make` on its own lists every target.
 
+## The chart
+
+`charts/demo-api` is the application half of the lab: a small FastAPI service with
+genuinely different `/healthz` and `/readyz` semantics, graceful shutdown, Prometheus
+metrics, and a `/api/v1/burn` endpoint that exists to give the HPA something to react to.
+
+```bash
+make ci        # lint + unit + build + install + smoke — the loop that matters
+```
+
+Individually:
+
+| | |
+|---|---|
+| `make build` | docker build, push to `localhost:5000`, tagged from `appVersion` |
+| `make lint` | `helm lint`, `ct lint`, `kubeconform --strict`, `kube-score` — over the defaults *and* every `ci/` value set |
+| `make unit` | `helm unittest` — template logic, no cluster needed |
+| `make install` | `helm upgrade --install --atomic --timeout 5m` |
+| `make smoke` | `helm test` in-cluster, plus a host-side check through the Gateway |
+| `make ct-install` | install every `ci/` value set into a throwaway namespace and `helm test` it |
+| `make rollout` | a ConfigMap change rolls the pods; a rollout under load drops zero requests; rollback works |
+| `make hpa` | `/api/v1/burn` scales the HPA up, and it scales back down afterwards |
+
+`make ci` includes `build` — the spec lists it as `lint + unit + install + smoke`, but on
+a clean cluster `install` has nothing to pull until the image has been pushed.
+
+`RELEASE` and `NAMESPACE` are overridable, so a second release can be installed alongside
+the first: `make install RELEASE=demo-api-b NAMESPACE=demo-api-b`.
+
 ## Reaching the cluster
 
 Everything binds to `127.0.0.1:80` and `127.0.0.1:443`. The only open question is how a
@@ -80,12 +109,18 @@ to the entrypoint with the matching port number, and the Service maps 80→8000 
 ```
 cluster/k3d.yaml           declarative cluster definition — the whole create invocation
 cluster/bootstrap/         bootstrap.sh, pinned values files, Gateway and CA manifests
+app/                       the demo service and its Dockerfile
+charts/demo-api/           the chart. ci/ holds the value sets chart-testing installs,
+                           tests/ the helm-unittest specs — both excluded by .helmignore
+schemas/crds/              vendored CRDs the lab validates against but does not install
+etc/                       chart-testing's schema and yamllint config, vendored
 scripts/curl.sh            the only way this repo makes an HTTP request
-scripts/verify.sh          the acceptance test
-.local/                    generated (CA cert). Gitignored, never committed.
+scripts/verify.sh          the acceptance test for the cluster
+scripts/smoke.sh           the acceptance test for an installed release
+.local/                    generated (CA cert, CRD schemas). Gitignored, never committed.
 ```
 
 ## Status
 
-Part 1 is done. Part 2 — the `demo-api` Helm chart — is not started. See
-[k3d-lab-spec.md](k3d-lab-spec.md) for where this is going.
+Parts 1 and 2 are done: the cluster is code and the chart is built, linted, unit-tested
+and installed by `make ci`. Part 3 is open — see [k3d-lab-spec.md](k3d-lab-spec.md).

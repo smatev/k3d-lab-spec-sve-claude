@@ -1,0 +1,63 @@
+demo-api {{ .Chart.AppVersion }} is installed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Chart version {{ .Chart.Version }} · image {{ include "demo-api.image" . }}
+
+{{ if .Values.route.httpRoute.enabled -}}
+Routing: Gateway API — HTTPRoute attached to Gateway {{ (first .Values.route.httpRoute.parentRefs).name }} in namespace {{ default .Release.Namespace (first .Values.route.httpRoute.parentRefs).namespace }}.
+{{- else if .Values.route.ingress.enabled -}}
+Routing: Ingress, compatibility mode, ingressClassName {{ .Values.route.ingress.className }}.
+{{- else -}}
+Routing: none. The Service is reachable from inside the cluster only.
+{{- end }}
+
+{{- if or .Values.route.httpRoute.enabled .Values.route.ingress.enabled }}
+
+Reach it from the host. This lab has no DNS, so every request goes through
+scripts/curl.sh — it injects the hostname with `curl --resolve` (which also sets TLS
+SNI correctly, unlike -H "Host:") and verifies against the local CA. Ready to paste:
+{{- if .Values.route.httpRoute.enabled }}
+{{- range .Values.route.httpRoute.hostnames }}
+
+  ./scripts/curl.sh https://{{ . }}/api/v1/info
+{{- end }}
+{{- else }}
+{{- range .Values.route.ingress.hosts }}
+
+  ./scripts/curl.sh https://{{ .host }}/api/v1/info
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- if and .Values.route.httpRoute.enabled .Values.route.httpRoute.localhost.enabled }}
+
+In a browser — no --resolve, no hosts-file entry, nothing outside the repo. The Gateway's
+certificate lists `localhost` explicitly, so trust .local/ca.crt once and this is a
+green padlock:
+
+  https://localhost{{ .Values.route.httpRoute.localhost.pathPrefix }}/api/v1/info
+{{- end }}
+
+Check what actually happened:
+
+  kubectl --context k3d-lab -n {{ .Release.Namespace }} rollout status deploy/{{ include "demo-api.fullname" . }}
+  helm --kube-context k3d-lab -n {{ .Release.Namespace }} test {{ .Release.Name }}
+{{- if .Values.route.httpRoute.enabled }}
+
+If a request 404s at the Gateway, read the route's status conditions before anything
+else. They say why — which is the part Ingress never did:
+
+  kubectl --context k3d-lab -n {{ .Release.Namespace }} describe httproute {{ include "demo-api.fullname" . }}
+{{- end }}
+{{- if and .Values.autoscaling.enabled .Values.route.httpRoute.enabled }}
+
+The HPA is on. Give it something to react to:
+
+  ./scripts/curl.sh 'https://{{ first .Values.route.httpRoute.hostnames }}/api/v1/burn?ms=500'
+  kubectl --context k3d-lab -n {{ .Release.Namespace }} get hpa {{ include "demo-api.fullname" . }} --watch
+{{- end }}
+{{- if .Values.secret.create }}
+
+NOTE: secret.create is true, so this release templated its token out of values.yaml.
+That is local development only — the value is in git and in `helm get values`. For
+anything real: secret.create=false, secret.existingSecret=<a Secret managed elsewhere>.
+{{- end }}

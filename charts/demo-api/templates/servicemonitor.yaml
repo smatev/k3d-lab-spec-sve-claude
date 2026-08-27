@@ -1,0 +1,50 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+# Tells a Prometheus Operator to scrape this Service. The operator turns it into
+# scrape config; without the operator installed the CRD does not exist and applying
+# this fails outright, which is why it is off by default.
+#
+# GOTCHA worth knowing, and the reason `make lint` renders this chart with
+# `--api-versions`: gating a template on `.Capabilities.APIVersions.Has` works at
+# install time (Helm asks the live cluster) but not under a bare `helm template`,
+# where the cluster is not there to ask. A chart that hides its ServiceMonitor and its
+# HTTPRoute behind Capabilities checks therefore renders *neither* in CI, and the
+# manifests kubeconform validates are missing exactly the resources most likely to be
+# wrong.
+#
+# This chart avoids the trap by gating on values alone — nothing here ever vanishes
+# silently. Enable it against a cluster with no Prometheus Operator and you get a
+# loud "no matches for kind ServiceMonitor", which is the correct outcome.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "demo-api.fullname" . }}
+  labels:
+    {{- include "demo-api.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    # The Prometheus resource picks ServiceMonitors up with a serviceMonitorSelector.
+    # If it selects on a label that is not here, this object is created, is valid, and
+    # is scraped by nobody.
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "demo-api.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: http
+      # The port *name* on the Service, not a number — the operator resolves it.
+      path: {{ .Values.metrics.path }}
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+      {{- with .Values.metrics.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.metrics.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

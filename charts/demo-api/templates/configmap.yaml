@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "demo-api.fullname" . }}
+  labels:
+    {{- include "demo-api.labels" . | nindent 4 }}
+data:
+  # Every value is quoted. A ConfigMap holds strings and only strings, and an
+  # unquoted `warmupSeconds: 5` is a YAML integer that the API server rejects with a
+  # type error rather than coercing. The same trap catches `true`, `no`, and version
+  # numbers like 1.10.
+  APP_ENV: {{ .Values.config.env | quote }}
+  APP_MESSAGE: {{ .Values.config.message | quote }}
+  WARMUP_SECONDS: {{ .Values.config.warmupSeconds | quote }}
+  {{- range $key, $value := .Values.config.extraEnv }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

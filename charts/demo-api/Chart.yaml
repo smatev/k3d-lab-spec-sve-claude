@@ -1,0 +1,38 @@
+apiVersion: v2
+name: demo-api
+description: A deliberately boring HTTP service, used to exercise a properly-built chart.
+type: application
+
+# Two different versions that move independently, which is the whole point of the split:
+#
+#   version    — the *chart's* version. Bump it for any change to templates, values, or
+#                defaults, even when the application image is untouched.
+#   appVersion — the *application's* version. It is the default image tag (values.yaml
+#                leaves image.tag empty), so bumping it ships a new image without
+#                touching a single template.
+version: 0.1.0
+appVersion: "0.1.0"
+
+# Gateway API v1 (gateway.networking.k8s.io/v1 HTTPRoute) reached GA in 1.0 and the
+# autoscaling/v2 HPA API needs >= 1.23. The lab runs 1.36.x; this floor is the honest
+# lower bound rather than a restatement of what we happen to run.
+#
+# The `-0` suffix matters: without it, semver pre-release tags (1.36.3-k3s1, which is
+# exactly what k3s reports) sort *below* 1.30.0 and the constraint rejects the very
+# cluster this chart is built for.
+kubeVersion: ">=1.30.0-0"
+
+keywords:
+  - demo
+  - gateway-api
+  - lab
+
+home: https://github.com/smatev/k3d-lab
+sources:
+  - https://github.com/smatev/k3d-lab
+
+maintainers:
+  - name: smatev
+
+annotations:
+  artifacthub.io/license: MIT

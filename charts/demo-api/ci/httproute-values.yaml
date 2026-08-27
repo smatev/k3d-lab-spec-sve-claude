@@ -1,0 +1,18 @@
+# Gateway API routing, exercised past the defaults.
+#
+# Multiple hostnames on one route and the browser-friendly localhost path route
+# switched off — the combination the defaults do not cover.
+route:
+  httpRoute:
+    enabled: true
+    hostnames:
+      - demo-api.k3d.local
+      - demo-api-alt.k3d.local
+    localhost:
+      enabled: false
+  ingress:
+    enabled: false
+
+config:
+  env: ci-httproute
+  message: "routed through the shared Gateway"

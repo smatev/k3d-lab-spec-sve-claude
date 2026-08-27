@@ -1,0 +1,79 @@
+{{- if .Values.route.httpRoute.enabled }}
+# Gateway API is the primary routing surface for this lab.
+#
+# apiVersion is gateway.networking.k8s.io/v1 — the GA version. There is a great deal
+# of v1alpha2 and v1beta1 HTTPRoute material still in circulation; treat any generated
+# apiVersion as suspect until kubeconform agrees with it.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "demo-api.fullname" . }}
+  labels:
+    {{- include "demo-api.labels" . | nindent 4 }}
+  {{- with .Values.route.httpRoute.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    # This is a cross-namespace attachment: the route lives in the release namespace,
+    # the Gateway in `gateway`. It binds only because the Gateway's listeners set
+    # allowedRoutes.namespaces.from: All. When a route appears to do nothing, read
+    # `kubectl describe httproute` — the Accepted and ResolvedRefs conditions say
+    # exactly why, which is a genuine improvement over Ingress's silence.
+    {{- toYaml .Values.route.httpRoute.parentRefs | nindent 4 }}
+  hostnames:
+    {{- toYaml .Values.route.httpRoute.hostnames | nindent 4 }}
+  rules:
+    - backendRefs:
+        - name: {{ include "demo-api.fullname" . }}
+          port: {{ .Values.service.port }}
+          # No `namespace:` here — a backendRef in another namespace would need a
+          # ReferenceGrant in that namespace to permit it. Same-namespace is the
+          # simple, correct case.
+{{- if .Values.route.httpRoute.localhost.enabled }}
+---
+# The browser-reachable route.
+#
+# `curl --resolve` cannot be typed into an address bar, and this lab has no DNS by
+# design, so the Gateway also answers on plain `localhost` under a path prefix. The
+# Gateway's certificate lists `localhost` explicitly — a wildcard for *.k3d.local does
+# not cover a single-label name.
+#
+# It is a separate HTTPRoute rather than a second rule because hostnames are a
+# property of the route, not of the rule: adding `localhost` to the route above would
+# expose the whole service at the root of localhost as well.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ printf "%s-localhost" (include "demo-api.fullname" .) }}
+  labels:
+    {{- include "demo-api.labels" . | nindent 4 }}
+  {{- with .Values.route.httpRoute.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml .Values.route.httpRoute.parentRefs | nindent 4 }}
+  hostnames:
+    - {{ .Values.route.httpRoute.localhost.hostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.route.httpRoute.localhost.pathPrefix | quote }}
+      filters:
+        # Without this the app would receive /demo/api/v1/info and 404 — it knows
+        # nothing about the prefix the Gateway matched on. ReplacePrefixMatch strips
+        # exactly the matched prefix and leaves the rest of the path alone.
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: {{ include "demo-api.fullname" . }}
+          port: {{ .Values.service.port }}
+{{- end }}
+{{- end }}

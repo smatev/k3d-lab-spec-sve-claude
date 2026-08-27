@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "demo-api.fullname" . }}-test-connection
+  labels:
+    {{- include "demo-api.labels" . | nindent 4 }}
+    # Marks this pod as not-the-application. The NetworkPolicy excludes it explicitly:
+    # a test pod governed by the app's egress rules cannot reach the app.
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    # before-hook-creation ONLY, deliberately.
+    #
+    # Adding hook-succeeded looks tidier and breaks `helm test --logs`: Helm deletes the
+    # pod as soon as it succeeds and then tries to read its logs, so a passing test
+    # reports `pods "…-test-connection" not found` and exits non-zero. Keeping the pod
+    # until the next run is what makes the output readable — on success and on failure,
+    # which is the case you actually need it for.
+    helm.sh/hook-delete-policy: before-hook-creation
+    # kube-score scores every Pod in the rendered output, including this one, and two
+    # of its checks do not apply to a hook that runs once and exits:
+    #
+    #   pod-probes         a readiness probe answers "should this receive traffic?".
+    #                      Nothing routes to a test pod; there is no traffic to gate.
+    #   pod-networkpolicy  the app's NetworkPolicy deliberately does NOT select this
+    #                      pod — it is labelled component=test precisely so the app's
+    #                      egress rules do not apply to the thing checking the app.
+    #
+    # Named individually rather than silencing the pod wholesale: the resource and
+    # securityContext checks below still have to pass, and they do.
+    kube-score/ignore: pod-probes,pod-networkpolicy
+spec:
+  restartPolicy: Never
+  # This runs INSIDE the cluster, so it reaches the Service by its cluster DNS name.
+  # No --resolve, no CA bundle, no Gateway. The host-side check through the Gateway
+  # lives in scripts/smoke.sh and tests a different thing: that routing and TLS work.
+  # Conflating the two produces a test that fails for two unrelated reasons.
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: wget
+      image: "{{ .Values.tests.image.repository }}:{{ .Values.tests.image.tag }}"
+      imagePullPolicy: {{ .Values.tests.image.pullPolicy }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+          ephemeral-storage: 16Mi
+        limits:
+          # A CPU limit on the *application* is a real trade-off (see values.yaml). On
+          # a pod that runs five wgets and exits it is free, and it keeps a test hook
+          # from ever competing with the workload it is supposed to be measuring.
+          cpu: 100m
+          memory: 32Mi
+          ephemeral-storage: 32Mi
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          BASE="http://{{ include "demo-api.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+
+          echo "--- readiness"
+          # The Service only has endpoints once a pod passes its readiness probe, so a
+          # 200 here already proves the probe wiring, not just that the app is up.
+          wget -q -O /dev/null "${BASE}{{ .Values.probes.readiness.path }}"
+          echo "ok"
+
+          echo "--- info"
+          body="$(wget -q -O - "${BASE}/api/v1/info")"
+          echo "${body}"
+
+          # Behavioural assertions, not string equality on a whole response body.
+          # These survive the app gaining a field; a golden-file comparison would not.
+          echo "${body}" | grep -q '"secret_mounted":true' \
+            || { echo "FAIL: the Secret is not mounted where the app expects it"; exit 1; }
+          echo "${body}" | grep -q '"ready":true' \
+            || { echo "FAIL: the app is serving but reports itself not ready"; exit 1; }
+          echo "${body}" | grep -q '"message":"{{ .Values.config.message }}"' \
+            || { echo "FAIL: the ConfigMap value did not reach the process"; exit 1; }
+
+          echo "--- metrics"
+          # demo_api_ready is a Gauge, so it is always in the exposition. A Counter
+          # with labels emits nothing until some request has incremented it, which
+          # would make this assertion depend on which replica the Service picked.
+          wget -q -O - "${BASE}{{ .Values.metrics.path }}" | grep -q '^demo_api_ready ' \
+            || { echo "FAIL: no demo_api metrics in the exposition"; exit 1; }
+
+          echo "all checks passed"
