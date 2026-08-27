@@ -95,6 +95,30 @@ Local Kubernetes learning lab. Everything is code — no manual kubectl apply.
   annotation, because the Job controller does not copy a Job's annotations onto its
   pods and that filter would silently match nothing.
 
+## Rules — remote access
+
+- `make argocd-ui`, `make gitea-ui` and `make dashboard` bind `127.0.0.1` **on purpose**.
+  Do not "fix" them to bind `0.0.0.0`. When the lab runs on a remote box and a browser
+  elsewhere needs in, that is `make remote-ui` — a separate, opt-in path.
+- `scripts/remote-ui.sh` is the only script here about the *host* rather than the cluster,
+  and the only one that touches systemd. It installs `k3d-lab-ui@.service` as a
+  `systemd --user` template unit and enables linger. The units live in `~/.config/systemd/`,
+  outside the repo, so nothing generated is committed.
+- **`kubectl port-forward` dies when the pod behind it restarts.** That is why the units
+  are `Restart=always` with `StartLimitIntervalSec=0` — at boot the cluster is usually not
+  up yet, so failing and retrying is the normal path, not an error.
+- **A systemd `--user` unit does not read your shell profile.** The unit pins `PATH` to
+  mise's shims explicitly; without that it starts and instantly dies on `kubectl: not
+  found`.
+- **The remote ports collide with the localhost targets.** Argo CD takes 8080, which
+  `make dashboard` wants; Gitea takes 8081, which `make argocd-ui` wants. With the
+  permanent forwards up, those one-off targets cannot bind.
+- Whether a port is reachable is a firewall question this repo cannot answer or detect.
+  Timeout = firewall dropping packets; refused = port open, nothing listening. On EC2
+  there is no `aws` CLI on the box, so the security group is a console change.
+- Exposing Argo CD this way hands cluster-admin to anyone the firewall admits, and Gitea's
+  password is in this repo. Say so when suggesting it; scope the rule to one address.
+
 ## Rules — DNS
 
 - There is NO external DNS in this project. No nip.io, sslip.io, or similar.
@@ -144,6 +168,7 @@ gitops/apps/                  child Applications — what the root app watches, 
 scripts/chart-push.sh         helm package + push to the OCI registry (the release step)
 scripts/gitops-push.sh        publish HEAD to the in-cluster Gitea, over a port-forward
 scripts/gitops-test.sh        delete/scale/edit by hand -> prove Argo CD undoes it
+scripts/remote-ui.sh          expose Argo CD/Gitea on 0.0.0.0 permanently (systemd --user)
 ```
 
 ## Current state
