@@ -18,10 +18,22 @@ readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 k() { kubectl --context "${CONTEXT}" "$@"; }
 
 # Pod UIDs, not names: a recreated pod gets a new UID even if the name is reused.
+#
+# Job-owned pods are excluded. The argo-cd chart's redis-secret-init is a Helm hook
+# annotated `pre-install,pre-upgrade` with `hook-delete-policy: before-hook-creation`,
+# which means it is *defined* to be deleted and recreated on every upgrade — the hook
+# working, in the same way an incrementing release revision is `upgrade --install`
+# working. It creates the redis auth Secret if one is missing and leaves behind nothing
+# but a Completed pod.
+#
+# Filtered on the owning Job rather than on the hook annotation, because the Job
+# controller does not copy a Job's own annotations onto the pods it creates — only
+# spec.template's. Filtering on helm.sh/hook here would silently match nothing and look
+# like it worked. Nothing that serves traffic in this lab is owned by a Job.
 snapshot_pods() {
   k get pods -A \
-    -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.metadata.uid} restarts={.status.containerStatuses[0].restartCount}{"\n"}{end}' \
-    2>/dev/null | sort
+    -o jsonpath='{range .items[*]}{.metadata.ownerReferences[0].kind}{"\t"}{.metadata.namespace}/{.metadata.name} {.metadata.uid} restarts={.status.containerStatuses[0].restartCount}{"\n"}{end}' \
+    2>/dev/null | awk -F'\t' '$1 != "Job" { print $2 }' | sort
 }
 
 # generation increments only when the *spec* changes, which is exactly the signal wanted.

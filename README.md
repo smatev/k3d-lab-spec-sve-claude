@@ -65,6 +65,39 @@ a clean cluster `install` has nothing to pull until the image has been pushed.
 `RELEASE` and `NAMESPACE` are overridable, so a second release can be installed alongside
 the first: `make install RELEASE=demo-api-b NAMESPACE=demo-api-b`.
 
+## GitOps
+
+From Part 3 on, the cluster's desired state is what Git says — not what a script last
+did. `make bootstrap` installs Gitea and Argo CD and applies exactly **one** Application,
+the root app-of-apps. Every workload after that arrives because it was committed.
+
+```bash
+make gitops        # publish image + chart + repo, then wait for Argo CD to converge
+make gitops-test   # delete/scale/edit by hand and prove Argo CD undoes all three
+```
+
+| | |
+|---|---|
+| `make chart-push` | `helm package` + push to the OCI registry — the release step |
+| `make gitops-push` | publish `HEAD` to the in-cluster Gitea (pushes commits, not your working tree) |
+| `make argocd-ui` | port-forward the Argo CD UI; `make argocd-password` prints the admin password |
+| `make gitea-ui` | port-forward Gitea (user `lab`) |
+
+**The Git server is in the cluster.** Not GitHub: this lab has no DNS contract, commits
+no credentials, and must come up on a machine with no account anywhere. Gitea runs on
+sqlite in a single pod, and `make down` destroys it — it is a publishing target, not
+where work happens.
+
+**Git holds the declaration, the registry holds the artifact.** `gitops/apps/` contains
+Application manifests; the chart itself is pulled from `k3d-registry:5000/charts`.
+Shipping a change is therefore two steps — `make chart-push`, then a commit pointing
+`targetRevision` at the new version — which is exactly the record a `helm upgrade`
+does not leave.
+
+Argo CD manages the demo app into `demo-api-gitops`, separately from the Helm-managed
+release in `demo-api`. Both run at once, on different hostnames, which is also a second
+exercise of the shared Gateway's cross-namespace routing.
+
 ## Reaching the cluster
 
 Everything binds to `127.0.0.1:80` and `127.0.0.1:443`. The only open question is how a
@@ -91,6 +124,8 @@ Port 80 redirects to 443, so plain HTTP answers `301` rather than reaching any r
 | Routing | Gateway API v1.6.1 (standard channel), Traefik v3.7.11 |
 | Gateway | `shared-gateway` in the `gateway` namespace, open to routes from all namespaces |
 | TLS | cert-manager, a self-signed root CA, `ClusterIssuer/k3d-lab-ca-issuer` |
+| Git | Gitea (chart 12.7.0) in-cluster, sqlite, one pod |
+| GitOps | Argo CD (chart 10.4.0, v3.5.1) plus one root Application and nothing else |
 
 The Traefik dashboard is enabled but not exposed. Reach it with `make dashboard`.
 
@@ -104,6 +139,13 @@ inside the cluster. Image references in Helm values must use the in-cluster one.
 to the entrypoint with the matching port number, and the Service maps 80→8000 and
 443→8443. A listener on port 80 resolves to no entrypoint and silently routes nothing.
 
+**`insecure` and "plain HTTP" are different things.** Pointing Argo CD at the k3d
+registry needs `insecureOCIForceHttp: "true"`. The obvious-looking `insecure: "true"`
+means *skip certificate verification*, so Argo CD still dials HTTPS and fails with
+`server gave HTTP response to HTTPS client` — and setting both is worse than setting
+neither, because helm ignores `--plain-http` whenever `--insecure-skip-tls-verify` is
+also present.
+
 ## Layout
 
 ```
@@ -114,13 +156,21 @@ charts/demo-api/           the chart. ci/ holds the value sets chart-testing ins
                            tests/ the helm-unittest specs — both excluded by .helmignore
 schemas/crds/              vendored CRDs the lab validates against but does not install
 etc/                       chart-testing's schema and yamllint config, vendored
+cluster/bootstrap/gitops/  the AppProject, the two UI routes, and the one root Application
+gitops/apps/               child Applications — what the root app watches, in Git
 scripts/curl.sh            the only way this repo makes an HTTP request
 scripts/verify.sh          the acceptance test for the cluster
 scripts/smoke.sh           the acceptance test for an installed release
+scripts/gitops-test.sh     the acceptance test for reconciliation
 .local/                    generated (CA cert, CRD schemas). Gitignored, never committed.
 ```
 
 ## Status
 
-Parts 1 and 2 are done: the cluster is code and the chart is built, linted, unit-tested
-and installed by `make ci`. Part 3 is open — see [k3d-lab-spec.md](k3d-lab-spec.md).
+Parts 1, 2 and 3 are done: the cluster is code, the chart is built, linted, unit-tested
+and installed by `make ci`, and Argo CD reconciles the whole thing from an in-cluster
+Git server. `make verify`, `make ci`, `make ct-install`, `make rollout`, `make hpa`,
+`make gitops` and `make gitops-test` are all green.
+
+Part 3 took candidate **A (GitOps)** from [k3d-lab-spec.md](k3d-lab-spec.md); B through
+E — supply chain/CI, observability, policy, progressive delivery — are still open.

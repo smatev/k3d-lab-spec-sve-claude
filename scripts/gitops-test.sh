@@ -22,9 +22,12 @@ readonly APP_NS="demo-api-gitops"
 readonly DEPLOY="demo-api"
 readonly HOST="demo-api-gitops.k3d.local"
 
-# Self-heal is event-driven, so this is normally seconds. The ceiling is generous
-# because a cold repo-server pulling the chart from the registry is not.
-readonly HEAL_TIMEOUT=180
+# Self-heal is event-driven, so the first drift is undone in seconds. Later ones are not:
+# Argo CD backs off exponentially between self-heal attempts on the same Application, and
+# this script deliberately drifts the same app three times in a row. Observed spread on
+# drift 3 is 5s to 162s depending on how much backoff has accumulated — so the ceiling is
+# sized for the backoff, not for the reconcile.
+readonly HEAL_TIMEOUT=300
 
 failures=0
 
