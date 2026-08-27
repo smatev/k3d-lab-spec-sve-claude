@@ -30,9 +30,15 @@ configs:
       type: helm
       url: k3d-registry:5000/charts
       enableOCI: "true"
-      # The k3d registry is plain HTTP. Without this Argo CD tries TLS, fails the
-      # handshake, and reports a chart-not-found error that says nothing about why.
-      insecure: "true"
+      # The k3d registry speaks plain HTTP, and this is the ONLY field that says so.
+      #
+      # `insecure: "true"` is the obvious-looking choice and it is wrong: it means
+      # "skip certificate verification", so Argo CD still opens an HTTPS connection and
+      # fails with `server gave HTTP response to HTTPS client`. Worse, setting it here
+      # actively breaks the fix — it adds `--insecure-skip-tls-verify` to the
+      # `helm pull`, and helm ignores `--plain-http` when both are present, so the pull
+      # keeps using TLS no matter what. The two flags must not be combined.
+      insecureOCIForceHttp: "true"
 
 # Single-user lab: no SSO, no notifications, no Redis HA.
 dex:

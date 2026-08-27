@@ -16,6 +16,17 @@ Local Kubernetes learning lab. Everything is code — no manual kubectl apply.
 - ingress-nginx is retired as of March 2026. Never suggest it.
 - Local registry: `k3d-registry:5000` inside the cluster, `localhost:5000` from the host.
   Image refs in values.yaml use the in-cluster name.
+- GitOps (Part 3): Argo CD chart `10.4.0` (app v3.5.1) and Gitea chart `12.7.0`
+  (app 1.27.0), both installed by `bootstrap.sh`. Argo CD reconciles from the
+  **in-cluster** Gitea, never from GitHub — the real remote is private and this lab
+  commits no credentials.
+- The app-of-apps root Application is the ONLY Application bootstrap.sh applies.
+  Everything else arrives from `gitops/apps/` in the repo. The chart itself comes from
+  the OCI registry (`k3d-registry:5000/charts`), not from Git.
+- Argo CD manages `demo-api` into namespace `demo-api-gitops`, hostname
+  `demo-api-gitops.k3d.local`. That is deliberately separate from `make install`, which
+  is Helm-managed in namespace `demo-api`. Both run at once; they must not share a
+  hostname or an object.
 
 ## Facts that are easy to get wrong
 
@@ -55,6 +66,34 @@ Local Kubernetes learning lab. Everything is code — no manual kubectl apply.
 - `rollout status` returns when the new pods are Ready, which with `maxUnavailable: 0`
   is *before* the old ones finish terminating. A check that reads the app right after it
   can still hit a draining pod.
+- **For a plain-HTTP OCI registry, Argo CD needs `insecureOCIForceHttp: "true"` on the
+  repository — NOT `insecure: "true"`.** `insecure` means "skip certificate
+  verification", so Argo CD still dials HTTPS and fails with `server gave HTTP response
+  to HTTPS client`. Setting both is worse than setting neither: `insecure` adds
+  `--insecure-skip-tls-verify` to the underlying `helm pull`, and helm ignores
+  `--plain-http` when both flags are present, so the pull keeps using TLS.
+- **The argo-cd chart has no `applicationSet.enabled`.** The key does not exist, so
+  setting it is accepted and silently ignored — the ApplicationSet controller's
+  Deployment template is unconditional, unlike `notifications`, which is genuinely
+  guarded by `if .Values.notifications.enabled`. `applicationSet.replicas: 0` is the
+  only way to not run it.
+- **Gitea's chart deploys a Deployment, not a StatefulSet**, despite the PVC, and
+  `gitea-http` is a *headless* Service (`clusterIP: None`). Both are fine; `rollout
+  status statefulset/gitea` is not, and fails with a NotFound that reads like the
+  install broke.
+- **Argo CD's server must run with `server.insecure: true`** because Traefik terminates
+  TLS. Left on HTTPS behind a TLS-terminating proxy it 307s every request to https and
+  the browser loops.
+- `git` has no `--resolve`, so the in-cluster Gitea cannot be pushed to through the
+  Gateway the way `curl.sh` reaches everything else. `scripts/gitops-push.sh` uses a
+  port-forward, which needs no hostname at all. Do not "fix" this with /etc/hosts.
+- `helm push` to the k3d registry needs `--plain-http` for the same reason as above.
+- **The argo-cd chart's `redis-secret-init` hook breaks a naive idempotency check.** It
+  is `pre-install,pre-upgrade` with `hook-delete-policy: before-hook-creation`, so every
+  bootstrap deletes and recreates its pod by design. `check-idempotent.sh` therefore
+  ignores Job-owned pods — filtered on the owning Job, not on the `helm.sh/hook`
+  annotation, because the Job controller does not copy a Job's annotations onto its
+  pods and that filter would silently match nothing.
 
 ## Rules — DNS
 
@@ -100,15 +139,28 @@ scripts/build.sh              docker build + push, tagged from Chart.yaml appVer
 scripts/smoke.sh              the acceptance test for an installed release
 scripts/rollout-test.sh       config-change rollout, zero-drop upgrade, rollback
 scripts/hpa-test.sh           burn load -> scale up -> scale back down
+cluster/bootstrap/gitops/     AppProject, HTTPRoutes, and the one root Application
+gitops/apps/                  child Applications — what the root app watches, in Git
+scripts/chart-push.sh         helm package + push to the OCI registry (the release step)
+scripts/gitops-push.sh        publish HEAD to the in-cluster Gitea, over a port-forward
+scripts/gitops-test.sh        delete/scale/edit by hand -> prove Argo CD undoes it
 ```
 
 ## Current state
 
-Parts 1 and 2 are built. `make ci` (lint, unit, build, install, smoke) is green, as are
-`make ct-install`, `make rollout`, `make hpa` and `make verify`.
+Parts 1, 2 and 3 are built. `make verify`, `make ci` (lint, unit, build, install,
+smoke), `make ct-install`, `make rollout`, `make hpa`, `make gitops` and
+`make gitops-test` are all green.
 
-Part 3 is not started; the candidates are in `k3d-lab-spec.md`. Two things already point
-at it: `metrics.serviceMonitor` is off by default because `monitoring.coreos.com` is not
-installed (the CRD is vendored in `schemas/crds/` for validation only), and
-`ct.yaml` disables `check-version-increment` because the chart is developed in place
-rather than published — turn it back on the day it is pushed to the registry.
+Part 3 chose candidate **A (GitOps)** from `k3d-lab-spec.md`. The remaining candidates
+there — supply chain/CI, observability, policy, progressive delivery — are still open.
+
+Two loose ends worth knowing:
+
+- `metrics.serviceMonitor` is off by default because `monitoring.coreos.com` is not
+  installed (the CRD is vendored in `schemas/crds/` for validation only). Candidate C
+  would change that.
+- `ct.yaml` disables `check-version-increment`. The chart IS now published to the OCI
+  registry by `make chart-push`, so the original reason ("developed in place, never
+  published") has partly expired — but the registry holds no index `ct` can diff
+  against, so turning it on still needs thought rather than a one-line flip.

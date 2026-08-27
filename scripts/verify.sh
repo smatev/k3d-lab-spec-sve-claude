@@ -245,6 +245,7 @@ main() {
   check_http_redirect
   check_https_404
   check_registry
+  check_gitops
 
   if [[ "${failures}" -eq 0 ]]; then
     printf '\n\033[1;32mverify: all checks passed\033[0m\n'
