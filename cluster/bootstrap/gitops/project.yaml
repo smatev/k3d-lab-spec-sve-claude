@@ -1,0 +1,36 @@
+# One AppProject for everything this lab deploys.
+#
+# The default project permits any source, any destination, any resource kind. That is
+# fine for a demo and useless as a lesson: the interesting property of a project is that
+# it is a *boundary*, and a boundary you never bump into teaches nothing. This one is
+# scoped to the two sources that exist and the namespaces the lab owns, so pointing an
+# Application somewhere unexpected fails loudly instead of silently working.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: lab
+  namespace: argocd
+spec:
+  description: Everything the k3d lab deploys through Argo CD.
+
+  sourceRepos:
+    # The in-cluster Git server, by Service DNS.
+    - http://gitea-http.gitea.svc.cluster.local:3000/lab/k3d-lab.git
+    # The in-cluster OCI registry. Argo CD matches this against the Application's
+    # repoURL verbatim, so it is spelled the way the Application spells it.
+    - k3d-registry:5000/charts
+
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: demo-api-gitops
+    # The root Application creates child Applications, which are objects in argocd.
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+
+  # Applications may create cluster-scoped objects of no kind at all. The chart needs
+  # none, and finding that out by having it rejected is the point.
+  clusterResourceWhitelist: []
+
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

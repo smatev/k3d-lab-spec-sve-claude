@@ -1,0 +1,27 @@
+# Created explicitly rather than relying on `helm --create-namespace`, so the HTTPRoutes
+# and the AppProject below have somewhere to land regardless of install order.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitea
+  labels:
+    app.kubernetes.io/part-of: k3d-lab
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/part-of: k3d-lab
+---
+# The namespace Argo CD manages the demo app into. Deliberately NOT `demo-api`: that one
+# belongs to `make install` and is managed by Helm from the host. Keeping them apart is
+# what lets the same chart be installed both ways at once without the two owners fighting
+# over the same objects — and it exercises the shared Gateway's cross-namespace routing
+# a second time.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-api-gitops
+  labels:
+    app.kubernetes.io/part-of: k3d-lab

@@ -47,7 +47,7 @@ check_nodes() {
 check_pods() {
   section "Pods"
   local ns bad
-  for ns in kube-system cert-manager traefik gateway; do
+  for ns in kube-system cert-manager traefik gateway gitea argocd; do
     # Anything not Running or Completed is a problem. Pods with restarts still count as
     # healthy here — a restart loop shows up as CrashLoopBackOff.
     bad="$(k -n "${ns}" get pods --no-headers 2>/dev/null \
@@ -191,6 +191,40 @@ check_registry() {
     k describe pod verify-registry 2>&1 | tail -15 | sed 's/^/      /'
   fi
   k delete pod verify-registry --ignore-not-found --wait=false >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+check_gitops() {
+  section "GitOps machinery"
+
+  # Deliberately checks that the machinery is *installed and reachable*, not that
+  # anything is Synced. A fresh `make up` leaves the root Application pointing at a
+  # repository nobody has pushed yet, so asserting Synced here would fail by design.
+  # Whether reconciliation actually works is scripts/gitops-test.sh's job.
+  if k -n argocd get application root >/dev/null 2>&1; then
+    pass "root Application exists"
+  else
+    fail "root Application missing — bootstrap did not seed Argo CD"
+  fi
+
+  if k -n argocd get appproject lab >/dev/null 2>&1; then
+    pass "AppProject 'lab' exists"
+  else
+    fail "AppProject 'lab' missing"
+  fi
+
+  # Both UIs attach to the shared Gateway from their own namespaces, which is the same
+  # cross-namespace attachment the app chart relies on — so this doubles as a second,
+  # independent check that allowedRoutes is still open.
+  local host code
+  for host in argocd.k3d.local gitea.k3d.local; do
+    code="$("${CURL}" "https://${host}/" -s -o /dev/null -w '%{http_code}' 2>/dev/null)"
+    if [[ "${code}" == 200 ]]; then
+      pass "https://${host}/ -> 200"
+    else
+      fail "https://${host}/ -> ${code:-<no response>}"
+    fi
+  done
 }
 
 # ---------------------------------------------------------------------------

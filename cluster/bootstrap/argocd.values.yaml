@@ -1,0 +1,61 @@
+# Argo CD — the reconciler.
+#
+# From here on the cluster's desired state is what Git says, not what a script last did.
+# bootstrap.sh installs Argo CD and applies exactly one Application (the root); every
+# other workload arrives because Argo CD read it out of the repository.
+
+global:
+  domain: argocd.k3d.local
+
+configs:
+  params:
+    # TLS terminates at the shared Gateway, so the API server itself speaks plain HTTP.
+    # Leaving Argo CD on HTTPS behind a TLS-terminating proxy is the classic redirect
+    # loop: argocd-server 307s every request to https, Traefik has already decided this
+    # connection is http, and the browser bounces between them forever.
+    server.insecure: true
+
+  cm:
+    # "Delete a Deployment and watch it come back" should be watchable, not a coffee
+    # break. Upstream default is 180s.
+    timeout.reconciliation: 30s
+
+  # Argo CD reads its repository list from Secrets labelled
+  # argocd.argoproj.io/secret-type: repository. The Gitea repo is public so it needs no
+  # entry at all; the OCI registry does, because Argo CD has to be told that a registry
+  # on :5000 with no TLS is expected rather than an attack.
+  repositories:
+    k3d-registry:
+      name: k3d-registry
+      type: helm
+      url: k3d-registry:5000/charts
+      enableOCI: "true"
+      # The k3d registry is plain HTTP. Without this Argo CD tries TLS, fails the
+      # handshake, and reports a chart-not-found error that says nothing about why.
+      insecure: "true"
+
+# Single-user lab: no SSO, no notifications, no Redis HA.
+dex:
+  enabled: false
+notifications:
+  enabled: false
+redis-ha:
+  enabled: false
+
+applicationSet:
+  # There is no applicationSet.enabled in this chart — the key simply does not exist, and
+  # setting it is accepted and ignored, which is the worst of both worlds. Unlike
+  # `notifications`, whose deployment template is wrapped in `if .Values.notifications
+  # .enabled`, the ApplicationSet controller's template is unconditional. Scaling to zero
+  # is the only way to not run it.
+  #
+  # Nothing in this lab generates Applications from a generator; the root app-of-apps
+  # reads them from a directory in Git. If that changes, this becomes 1.
+  replicas: 0
+
+controller:
+  replicas: 1
+server:
+  replicas: 1
+repoServer:
+  replicas: 1

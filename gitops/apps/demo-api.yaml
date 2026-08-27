@@ -1,0 +1,53 @@
+# A child Application, discovered by the root app because this file is in
+# gitops/apps/ in the repository Argo CD watches. Nothing applied this; it exists
+# because it was committed.
+#
+# The chart itself comes from the in-cluster OCI registry, not from Git. That split is
+# the point: Git holds the *declaration* of what should run, the registry holds the
+# packaged artifact. Bumping the app therefore means `make chart-push` (publish a new
+# chart version) followed by a commit changing targetRevision below — two steps that a
+# `helm upgrade` collapses into one and, in doing so, leaves no record of.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-api
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: lab
+
+  source:
+    # No oci:// prefix: for a Helm-type repository Argo CD stores the registry and path
+    # bare, and takes enableOCI from the repository Secret in argocd.values.yaml.
+    repoURL: k3d-registry:5000/charts
+    chart: demo-api
+    # For an OCI Helm source this is the CHART version, not a git ref. It must match a
+    # tag that `make chart-push` has actually pushed.
+    targetRevision: 0.1.0
+
+    helm:
+      releaseName: demo-api
+      values: |
+        # This release shares a cluster with the Helm-managed one in namespace
+        # demo-api, so it must not claim the same hostname — two HTTPRoutes on one
+        # hostname is ambiguous and Traefik resolves it by picking one.
+        route:
+          httpRoute:
+            hostnames:
+              - demo-api-gitops.k3d.local
+            localhost:
+              pathPrefix: /gitops
+
+        config:
+          env: gitops
+          message: "hello from Argo CD"
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-api-gitops
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

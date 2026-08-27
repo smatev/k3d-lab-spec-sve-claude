@@ -29,7 +29,8 @@ export PATH := $(MISE_SHIMS):$(HOME)/.local/bin:$(PATH)
 endif
 
 .PHONY: help tools doctor up down bootstrap ca verify idempotent reset dashboard \
-        schemas build lint unit install uninstall smoke ct-install rollout hpa ci
+        schemas build lint unit install uninstall smoke ct-install rollout hpa ci \
+        chart-push gitops-push gitops gitops-test argocd-ui gitea-ui argocd-password
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -122,6 +123,41 @@ hpa: ## Prove: /api/v1/burn scales the HPA up, and it scales back down afterward
 
 ci: lint unit build install smoke ## The loop that matters
 	@printf '\n\033[1;32mci: green\033[0m\n'
+
+## --- Part 3: GitOps ---------------------------------------------------------
+
+chart-push: ## Package the chart and push it to the k3d registry as an OCI artifact
+	./scripts/chart-push.sh
+
+gitops-push: ## Publish this repo (HEAD) to the in-cluster Gitea that Argo CD watches
+	./scripts/gitops-push.sh
+
+gitops: build chart-push gitops-push ## Publish image + chart + repo, then wait for Argo CD to converge
+	@# Nothing here applies a workload. It publishes artifacts and then waits for the
+	@# cluster to agree with the repository on its own.
+	@printf '\n\033[1;34m==>\033[0m Waiting for Argo CD to converge\n'
+	$(KUBECTL) -n argocd wait --for=jsonpath='{.status.sync.status}'=Synced \
+		application/root --timeout=180s
+	$(KUBECTL) -n argocd wait --for=jsonpath='{.status.sync.status}'=Synced \
+		application/demo-api --timeout=300s
+	$(KUBECTL) -n argocd wait --for=jsonpath='{.status.health.status}'=Healthy \
+		application/demo-api --timeout=300s
+	@printf '\n\033[1;32mgitops: converged\033[0m\n'
+
+gitops-test: ## Prove: delete a Deployment by hand and watch Argo CD put it back
+	./scripts/gitops-test.sh
+
+argocd-ui: ## Port-forward the Argo CD UI to http://127.0.0.1:8081 (user: admin)
+	@echo "http://127.0.0.1:8081   user 'admin', password from: make argocd-password"
+	$(KUBECTL) -n argocd port-forward svc/argocd-server 8081:80
+
+argocd-password: ## Print the generated Argo CD admin password
+	@$(KUBECTL) -n argocd get secret argocd-initial-admin-secret \
+		-o jsonpath='{.data.password}' | base64 -d; echo
+
+gitea-ui: ## Port-forward Gitea to http://127.0.0.1:3300 (user: lab / lab-not-a-secret)
+	@echo "http://127.0.0.1:3300   user 'lab', password 'lab-not-a-secret'"
+	$(KUBECTL) -n gitea port-forward svc/gitea-http 3300:3000
 
 ## --- conveniences ---------------------------------------------------------
 

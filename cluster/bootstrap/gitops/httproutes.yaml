@@ -1,0 +1,48 @@
+# Both UIs attach to the shared Gateway from their own namespaces, exactly the way the
+# app chart does. Nothing here is browser-reachable without `curl.sh --resolve` or a
+# port-forward, because the lab has no DNS — see `make argocd-ui` / `make gitea-ui`.
+#
+# Hostnames are covered by the Gateway's existing wildcard Certificate (*.k3d.local), so
+# no new Certificate is needed.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: argocd
+  namespace: argocd
+spec:
+  parentRefs:
+    - name: shared-gateway
+      namespace: gateway
+  hostnames:
+    - argocd.k3d.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        # argocd-server serves the UI, the API and gRPC on the same port. With
+        # server.insecure=true that port is plain HTTP, which is what the Gateway
+        # forwards to.
+        - name: argocd-server
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: gitea
+  namespace: gitea
+spec:
+  parentRefs:
+    - name: shared-gateway
+      namespace: gateway
+  hostnames:
+    - gitea.k3d.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: gitea-http
+          port: 3000
