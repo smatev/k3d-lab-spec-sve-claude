@@ -30,7 +30,8 @@ endif
 
 .PHONY: help tools doctor up down bootstrap ca verify idempotent reset dashboard \
         schemas build lint unit install uninstall smoke ct-install rollout hpa ci \
-        chart-push gitops-push gitops gitops-test argocd-ui gitea-ui argocd-password
+        chart-push gitops-push gitops gitops-test argocd-ui gitea-ui argocd-password \
+        remote-ui remote-ui-status remote-ui-stop remote-ui-uninstall
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -158,6 +159,24 @@ argocd-password: ## Print the generated Argo CD admin password
 gitea-ui: ## Port-forward Gitea to http://127.0.0.1:3300 (user: lab / lab-not-a-secret)
 	@echo "http://127.0.0.1:3300   user 'lab', password 'lab-not-a-secret'"
 	$(KUBECTL) -n gitea port-forward svc/gitea-http 3300:3000
+
+## --- remote access --------------------------------------------------------
+##
+## For a lab on a remote box. The targets above bind 127.0.0.1 on purpose; these bind
+## 0.0.0.0 and persist across reboots. Read the header of scripts/remote-ui.sh first —
+## it exposes Argo CD, which has cluster-admin, to anyone your firewall lets in.
+
+remote-ui: ## Expose Argo CD (:8080) and Gitea (:8081) on 0.0.0.0, permanently (systemd)
+	./scripts/remote-ui.sh install
+
+remote-ui-status: ## Show the permanent forwards and what answers on each port
+	./scripts/remote-ui.sh status
+
+remote-ui-stop: ## Stop the permanent forwards (still enabled at next boot)
+	./scripts/remote-ui.sh stop
+
+remote-ui-uninstall: ## Stop, disable, and remove the permanent forwards
+	./scripts/remote-ui.sh uninstall
 
 ## --- conveniences ---------------------------------------------------------
 

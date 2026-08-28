@@ -115,6 +115,56 @@ real bug, not something to skip past.
 
 Port 80 redirects to 443, so plain HTTP answers `301` rather than reaching any route.
 
+## Reaching the UIs from another machine
+
+`make argocd-ui`, `make gitea-ui` and `make dashboard` bind `127.0.0.1`. That is correct
+for a lab on a laptop and useless for a lab on a remote box: a browser elsewhere cannot
+reach another machine's loopback. `make remote-ui` is the remote case.
+
+```bash
+make remote-ui           # install + start, idempotent
+make remote-ui-status    # units, listeners, and what actually answers
+make remote-ui-stop      # stop, still enabled at next boot
+make remote-ui-uninstall # stop, disable, remove
+```
+
+It exposes Argo CD on `:8080` and Gitea on `:8081`, bound to `0.0.0.0`, as systemd
+`--user` units with `Restart=always`, plus `loginctl enable-linger` so they start at boot
+and outlive your SSH session. The restart policy is not paranoia: `kubectl port-forward`
+dies when the pod behind it restarts, and these pods restart whenever the box does.
+
+Two ports mean both UIs are reachable at once. Change which ports with
+`ARGOCD_UI_PORT` / `GITEA_UI_PORT`, then re-run `make remote-ui`.
+
+**This exposes Argo CD, which holds cluster-admin over the lab, and Gitea, whose password
+is in this repo.** Scope your firewall rule to your own address, and do not do this on a
+box that holds anything you care about.
+
+**Two prerequisites, and only one of them is in this repo.** The forward must bind
+`0.0.0.0` — that is what this script does. The port must also be open in the host's
+firewall, which it cannot do or even detect. The symptoms are distinguishable, so use
+them:
+
+| Browser says | Meaning |
+|---|---|
+| `ERR_CONNECTION_TIMED_OUT` | The firewall is dropping the packets. Nothing on the box will fix it. |
+| `ERR_CONNECTION_REFUSED` | The port is open; nothing is listening. `make remote-ui-status`. |
+| The page loads | Both are satisfied. |
+
+On EC2 that firewall is the instance's security group, and there is no `aws` CLI on the
+box — it is a console change.
+
+**These ports collide with two of the localhost targets.** `make argocd-ui` wants 8081,
+which is Gitea's here, and `make dashboard` wants 8080, which is Argo CD's. With the
+permanent forwards running, both fail to bind. Use `make remote-ui-stop` first, or give
+the one-off a different port.
+
+The app hostnames are a different matter and are **not** reachable this way. There is no
+DNS, so `https://demo-api.k3d.local/` from a browser resolves nowhere, and pointing one at
+the host's address sends `Host: <ip>`, which matches no HTTPRoute and gets Traefik's 404.
+That is what [scripts/curl.sh](scripts/curl.sh) is for. These forwards work precisely
+because they bypass the Gateway.
+
 ## What `make up` builds
 
 | | |
@@ -162,6 +212,8 @@ scripts/curl.sh            the only way this repo makes an HTTP request
 scripts/verify.sh          the acceptance test for the cluster
 scripts/smoke.sh           the acceptance test for an installed release
 scripts/gitops-test.sh     the acceptance test for reconciliation
+scripts/remote-ui.sh       expose the UIs on 0.0.0.0 permanently — about the host, not
+                           the cluster; the only script here that touches systemd
 .local/                    generated (CA cert, CRD schemas). Gitignored, never committed.
 ```
 
