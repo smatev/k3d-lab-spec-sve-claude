@@ -18,6 +18,44 @@ make doctor    # confirm every tool is present at the pinned version
 
 Nothing else. No DNS setup, no `/etc/hosts` edits, no wildcard resolver service.
 
+## Starting from a bare server
+
+[start.sh](start.sh) is the one-command path from a fresh Ubuntu box to a fully built,
+verified, GitOps-reconciling lab. It is the only script here that installs anything on the
+host, so it asks for a sudo password up front; everything after that is the same `make`
+targets documented below.
+
+```bash
+./start.sh
+```
+
+It installs `docker.io` and [mise](https://mise.jdx.dev) if they are missing, runs
+`make tools`, then `make down && make up && make verify && make ci && make gitops &&
+make gitops-test` — the full green-from-scratch run. Finally it calls `make remote-ui`
+and prints the Argo CD and Gitea URLs with credentials, because the assumption is that you
+reached this box over SSH and want a browser on it from somewhere else.
+
+Re-running it on an already-provisioned box is fine: the install step is skipped and the
+`down`/`up` cycle rebuilds the cluster from scratch.
+
+**It re-executes itself under `sg docker` on a first run, and that is deliberate.**
+`usermod -aG docker` edits `/etc/group`, but a process's group list is fixed at login — so
+the shell that just added you, and every `make`/`k3d`/`docker` it spawns, still gets
+`permission denied ... /var/run/docker.sock` even though `getent group docker` lists you.
+Rather than telling you to log out and back in, the script `exec`s one new process with
+the group applied. The sudo password is handed to that process through the environment,
+not the command line, so it never appears in `ps`.
+
+If the daemon is still unreachable after that, the script stops with a diagnosis rather
+than a wall of failed make output: whether you are in the group in *this* session, and
+whether the daemon is actually running.
+
+**Two things it cannot do for you.** The app hostnames are not browser-reachable — there
+is no DNS, so use [scripts/curl.sh](scripts/curl.sh), which is what the closing message
+tells you. And `make remote-ui` binds `0.0.0.0` but cannot open the host firewall; see
+[Reaching the UIs from another machine](#reaching-the-uis-from-another-machine) for the
+security-group half, and read the warning there before pointing anything at Argo CD.
+
 ## Use
 
 ```bash
@@ -199,6 +237,7 @@ also present.
 ## Layout
 
 ```
+start.sh                   bare server -> provisioned, built and verified lab, in one run
 cluster/k3d.yaml           declarative cluster definition — the whole create invocation
 cluster/bootstrap/         bootstrap.sh, pinned values files, Gateway and CA manifests
 app/                       the demo service and its Dockerfile
