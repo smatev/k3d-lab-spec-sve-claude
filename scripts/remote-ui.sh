@@ -124,6 +124,10 @@ Documentation=file://${REPO_ROOT}/README.md
 
 [Service]
 Type=simple
+# WorkingDirectory matters as much as PATH: mise's shims resolve a pinned version from
+# .tool-versions in the cwd, and a systemd unit's cwd is otherwise \$HOME, not the repo —
+# so without this, the shim runs but still fails with "No version is set for shim: kubectl".
+WorkingDirectory=${REPO_ROOT}
 Environment=PATH=${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=${REPO_ROOT}/scripts/remote-ui.sh forward %i
 Restart=always
