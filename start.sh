@@ -54,12 +54,18 @@ if is_new_server; then
   fi
 
   reexec_with_docker_group
-
-  make tools
 else
   echo "==> Toolchain already present, skipping install"
   reexec_with_docker_group
 fi
+
+# `reexec_with_docker_group` only returns here once the docker group is confirmed
+# active — either because it was already active, or because this is the re-exec'd
+# process. `exec` replaces the process on an actual re-exec, so `make tools` must live
+# outside both branches above: putting it inside the `if` branch means it never runs,
+# because the re-exec'd process takes the `else` branch instead (docker and mise are
+# now both installed) and never reaches it either.
+make tools
 
 if ! docker info >/dev/null 2>&1; then
   echo "ERROR: cannot reach the Docker daemon at /var/run/docker.sock." >&2
